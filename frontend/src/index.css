@@ -4,12 +4,17 @@
 
 @layer base {
   body {
-    @apply bg-base-100 text-base-content;
+    @apply bg-base-100 text-base-content antialiased;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Accessible focus indicators */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-base-100;
   }
 }
 
-/* Custom scrollbar for bronze theme */
+/* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -20,18 +25,35 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d2d2c6;
+  background: #3b4754; /* blue_slate 400 */
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a5a58d;
+  background: #495867; /* blue_slate DEFAULT */
 }
 
-[data-theme="bronze-dark"] ::-webkit-scrollbar-thumb {
-  background: #39392d;
+[data-theme="studio-dark"] ::-webkit-scrollbar-thumb {
+  background: #2c363f; /* blue_slate 300 */
 }
 
-[data-theme="bronze-dark"] ::-webkit-scrollbar-thumb:hover {
-  background: #565643;
+[data-theme="studio-dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #495867; /* blue_slate DEFAULT */
+}
+
+[data-theme="cool-sky"] ::-webkit-scrollbar-thumb,
+[data-theme="warm-linen"] ::-webkit-scrollbar-thumb,
+[data-theme="warm-parchment"] ::-webkit-scrollbar-thumb {
+  background: #bdd5ea; /* pale_sky DEFAULT */
+}
+
+[data-theme="cool-sky"] ::-webkit-scrollbar-thumb:hover,
+[data-theme="warm-linen"] ::-webkit-scrollbar-thumb:hover,
+[data-theme="warm-parchment"] ::-webkit-scrollbar-thumb:hover {
+  background: #7dacd6; /* pale_sky 400 */
+}
+
+/* Animation utilities for smooth transitions without layout shift */
+.transition-smooth {
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }

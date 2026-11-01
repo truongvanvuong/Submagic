@@ -330,8 +330,9 @@ async def _run_cloud_gemini_stt(
                 f"{req.max_chars_per_line * req.max_lines_per_segment} characters. "
                 f"Return ONLY a JSON array of objects with keys: start_time (float), end_time (float), text (string)."
             )
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
+            from app.utils.gemini_client import generate_content_with_resilience
+            response = generate_content_with_resilience(
+                client=client,
                 contents=[uploaded_file, prompt],
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",

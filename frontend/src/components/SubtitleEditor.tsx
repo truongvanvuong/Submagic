@@ -21,6 +21,7 @@ import type {
   SubtitleSegmentUpdate,
 } from '../types/subtitle';
 import { TRANSLATE_TARGET_LANGUAGES } from '../constants/languages';
+import ConfirmModal from './ConfirmModal';
 
 export interface SubtitleEditorProps {
   segments: SubtitleSegment[];
@@ -194,17 +195,17 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
     <div
       onClick={handleCardClick}
       title="Nhấp để chuyển video đến đoạn phụ đề này"
-      className={`card card-bordered transition-all duration-150 p-3 cursor-pointer ${
+      className={`card card-bordered transition-smooth p-3.5 cursor-pointer rounded-xl ${
         isActive
-          ? 'bg-primary/10 border-primary shadow-sm ring-2 ring-primary/40'
-          : 'bg-base-100 border-base-200 hover:border-base-300 hover:shadow-xs'
+          ? 'bg-glaucous-500/10 border-glaucous-500/80 shadow-md ring-1 ring-glaucous-400/50'
+          : 'bg-base-100/90 border-blue_slate-500/20 hover:border-glaucous-500/40 hover:bg-base-100 hover:shadow-xs'
       }`}
     >
       {/* Top Header: Index, Source Badge, Timestamps, and Action Buttons */}
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           {/* Index Number */}
-          <span className="badge badge-neutral badge-sm font-bold font-mono">
+          <span className="badge bg-glaucous-500 text-ghost_white-DEFAULT border-none badge-sm font-bold font-mono">
             {index + 1}
           </span>
 
@@ -214,9 +215,9 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
               type="button"
               onClick={() => onSeek(segment.start_time)}
               title="Nhấp để chuyển video đến mốc này"
-              className="btn btn-ghost btn-xs font-mono gap-1 text-base-content/80 hover:text-primary px-1.5"
+              className="btn btn-ghost btn-xs font-mono gap-1 text-glaucous-600 dark:text-pale_sky-400 hover:text-primary px-1.5 rounded"
             >
-              <Clock className="w-3 h-3 text-base-content/50" />
+              <Clock className="w-3 h-3 text-glaucous-600 dark:text-pale_sky-400" />
               <span>{formatTimestamp(segment.start_time)}</span>
               <span className="text-base-content/40">→</span>
               <span>{formatTimestamp(segment.end_time)}</span>
@@ -227,19 +228,19 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
                 type="text"
                 value={startTimeStr}
                 onChange={(e) => setStartTimeStr(e.target.value)}
-                className="input input-bordered input-xs font-mono w-20"
+                className="input input-xs font-mono w-20 bg-base-200 input-bordered rounded"
               />
               <span className="text-base-content/40">-</span>
               <input
                 type="text"
                 value={endTimeStr}
                 onChange={(e) => setEndTimeStr(e.target.value)}
-                className="input input-bordered input-xs font-mono w-20"
+                className="input input-xs font-mono w-20 bg-base-200 input-bordered rounded"
               />
               <button
                 type="button"
                 onClick={handleSaveTimes}
-                className="btn btn-success btn-xs btn-square"
+                className="btn btn-success btn-xs btn-square rounded"
                 title="Lưu thời gian"
               >
                 <Check className="w-3 h-3 text-success-content" />
@@ -353,19 +354,19 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
             onChange={handleTextChange}
             onBlur={handleBlurText}
             placeholder="Nhập nội dung phụ đề gốc..."
-            className="textarea textarea-bordered textarea-xs w-full text-sm leading-relaxed focus:textarea-primary"
+            className="textarea  textarea-xs w-full text-sm leading-relaxed bg-base-200/50 border-blue_slate-500/30 text-base-content focus:border-glaucous-500 rounded-lg transition-colors font-sans"
           />
 
           {/* Translated Text Input */}
           <div className="flex items-center gap-1.5">
-            <Languages className="w-3.5 h-3.5 text-base-content/50 flex-shrink-0" />
+            <Languages className="w-3.5 h-3.5 text-glaucous-600 dark:text-pale_sky-400 flex-shrink-0" />
             <input
               type="text"
               value={localTranslated}
               onChange={handleTranslatedChange}
               onBlur={handleBlurTranslated}
               placeholder="Bản dịch phụ đề (tùy chọn)..."
-              className="input input-bordered input-xs flex-1 text-xs focus:input-primary"
+              className="input input-xs flex-1 text-xs bg-base-200/50 border-blue_slate-500/30 text-glaucous-700 dark:text-pale_sky-300 focus:border-glaucous-500 rounded-lg transition-colors font-sans"
             />
           </div>
         </div>
@@ -410,6 +411,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
   const [splitTime, setSplitTime] = useState<number>(0);
   const [splitFirstText, setSplitFirstText] = useState<string>('');
   const [splitSecondText, setSplitSecondText] = useState<string>('');
+  const [pendingDeleteSegmentId, setPendingDeleteSegmentId] = useState<string | null>(null);
 
   const listContainerRef = useRef<HTMLDivElement | null>(null);
 
@@ -531,14 +533,14 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
 
   return (
     <div
-      className={`flex flex-col bg-base-100 rounded-xl border border-base-200 shadow-sm overflow-hidden h-full ${className}`}
+      className={`flex flex-col bg-base-200 rounded-xl border border-blue_slate-500/25 shadow-lg overflow-hidden h-full transition-smooth ${className}`}
     >
       {/* Top Header: Title, Segment Stats, AI Actions, Add Button */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-base-200/50 border-b border-base-200">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 bg-base-300/80 border-b border-blue_slate-500/20">
         <div className="flex items-center gap-2">
           <FileText className="w-4 h-4 text-primary" />
-          <h2 className="font-bold text-base-content text-sm">Subtitle Editor</h2>
-          <span className="badge badge-sm badge-neutral font-mono">
+          <h2 className="font-bold text-base-content text-sm tracking-tight">Subtitle Editor</h2>
+          <span className="badge badge-sm bg-glaucous-500 text-ghost_white-DEFAULT border-none font-mono">
             {filteredSegments.length}/{segments.length}
           </span>
         </div>
@@ -551,21 +553,21 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
               onClick={onAIPolish}
               disabled={isProcessing || segments.length === 0}
               title="Dùng Gemini AI để sửa lỗi chính tả phụ đề"
-              className="btn btn-xs btn-outline btn-secondary gap-1"
+              className="btn btn-xs btn-outline border-blue_slate-500/30 hover:border-glaucous-500 hover:bg-base-300 text-base-content/85 gap-1.5 rounded-lg cursor-pointer"
             >
-              <Sparkles className="w-3.5 h-3.5" />
+              <Sparkles className="w-3.5 h-3.5 text-glaucous-600 dark:text-pale_sky-400" />
               <span>AI Polish</span>
             </button>
           )}
 
-          {/* AI Translate Dropdown + Button (daisyUI Select - Req 3) */}
+          {/* AI Translate Dropdown + Button */}
           {onTranslate && (
-            <div className="join">
+            <div className="join border border-blue_slate-500/30 rounded-lg overflow-hidden">
               <select
                 value={translateTarget}
                 onChange={handleTranslateTargetChange}
                 disabled={isProcessing || segments.length === 0}
-                className="select select-bordered select-xs join-item bg-base-100 text-xs max-w-[130px]"
+                className="select select-bordered select-xs join-item bg-base-100 border-none text-xs max-w-[130px] cursor-pointer"
                 title="Chọn ngôn ngữ cần dịch sang"
               >
                 {TRANSLATE_TARGET_LANGUAGES.map((lang) => (
@@ -579,7 +581,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
                 onClick={handleTriggerTranslate}
                 disabled={isProcessing || segments.length === 0}
                 title="Bắt đầu dịch phụ đề sang ngôn ngữ đã chọn"
-                className="btn btn-xs btn-outline btn-accent join-item gap-1"
+                className="btn btn-xs bg-glaucous-600 hover:bg-glaucous-700 text-ghost_white-DEFAULT join-item gap-1 border-none cursor-pointer"
               >
                 <Languages className="w-3.5 h-3.5" />
                 <span>Dịch</span>
@@ -593,7 +595,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
             onClick={() => onAddSegment(currentTime)}
             disabled={isProcessing}
             title="Thêm một câu phụ đề mới tại mốc thời gian hiện tại"
-            className="btn btn-xs btn-primary gap-1"
+            className="btn btn-xs btn-primary gap-1 rounded-lg font-semibold cursor-pointer shadow-sm"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Thêm</span>
@@ -602,22 +604,22 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
       </div>
 
       {/* Filter and Search Bar */}
-      <div className="flex flex-wrap items-center gap-2 px-4 py-2 bg-base-100 border-b border-base-200 text-xs">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 bg-base-300/40 border-b border-blue_slate-500/20 text-xs">
         {/* Search input */}
         <div className="relative flex-1 min-w-[150px]">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-base-content/50" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-glaucous-600 dark:text-pale_sky-400" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Tìm kiếm phụ đề..."
-            className="input input-bordered input-xs w-full pl-8 pr-7"
+            className="input input-xs w-full pl-8 pr-7 bg-base-100 border-blue_slate-500/30 focus:border-glaucous-500 rounded-lg text-xs"
           />
           {searchQuery && (
             <button
               type="button"
               onClick={() => setSearchQuery('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-base-content/50 hover:text-base-content"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-glaucous-600 dark:text-pale_sky-400 hover:text-base-content cursor-pointer"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -628,7 +630,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
         <select
           value={sourceFilter}
           onChange={(e) => setSourceFilter(e.target.value as any)}
-          className="select select-bordered select-xs text-xs"
+          className="select select-xs text-xs bg-base-100 border-blue_slate-500/30 focus:border-glaucous-500 rounded-lg cursor-pointer"
         >
           <option value="all">Tất cả nguồn</option>
           <option value="stt">STT (Giọng nói)</option>
@@ -640,10 +642,10 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
         <button
           type="button"
           onClick={() => setLowConfidenceOnly(!lowConfidenceOnly)}
-          className={`btn btn-xs gap-1 ${
+          className={`btn btn-xs gap-1 rounded-lg cursor-pointer ${
             lowConfidenceOnly
               ? 'btn-error'
-              : 'btn-ghost border-base-300'
+              : 'btn-ghost bg-base-100 border-blue_slate-500/30 text-base-content/70'
           }`}
         >
           <AlertCircle className="w-3.5 h-3.5" />
@@ -655,10 +657,10 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
           type="button"
           onClick={() => setAutoScroll(!autoScroll)}
           title="Tự động cuộn theo tiến trình video"
-          className={`btn btn-xs gap-1 ${
+          className={`btn btn-xs gap-1 rounded-lg cursor-pointer ${
             autoScroll
               ? 'btn-primary btn-outline'
-              : 'btn-ghost border-base-300 text-base-content/50'
+              : 'btn-ghost bg-base-100 border-blue_slate-500/30 text-base-content/50'
           }`}
         >
           <ArrowUpDown className="w-3.5 h-3.5" />
@@ -701,7 +703,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
                   canMergeNext={canMergeNext}
                   onSeek={onSeek}
                   onUpdate={onUpdateSegment}
-                  onDelete={onDeleteSegment}
+                  onDelete={(id) => setPendingDeleteSegmentId(id)}
                   onMergeWithNext={handleMergeWithNext}
                   onOpenSplitDialog={handleOpenSplitDialog}
                   onOpenCropModal={(s) => setSelectedCropSegment(s)}
@@ -726,26 +728,26 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
 
       {/* Enlarged OCR Crop Modal (daisyUI modal) */}
       {selectedCropSegment && (
-        <div className="modal modal-open">
-          <div className="modal-box max-w-lg p-0 overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 bg-base-200 border-b border-base-300">
+        <div className="modal modal-open bg-blue_slate-100/70 backdrop-blur-xs">
+          <div className="modal-box max-w-lg p-0 overflow-hidden bg-base-200 border border-blue_slate-500/30 rounded-xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-3.5 bg-base-300/80 border-b border-blue_slate-500/25">
               <div className="flex items-center gap-2">
                 <ImageIcon className="w-4 h-4 text-warning" />
-                <h3 className="font-bold text-sm">
+                <h3 className="font-bold text-sm text-base-content">
                   Đối chiếu OCR Crop — Đoạn #{selectedCropSegment.index}
                 </h3>
               </div>
               <button
                 type="button"
                 onClick={() => setSelectedCropSegment(null)}
-                className="btn btn-ghost btn-xs btn-square"
+                className="btn btn-ghost btn-xs btn-square text-base-content/70 hover:text-base-content rounded-lg"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-4 flex flex-col gap-4">
-              <div className="w-full bg-ash-grey-950 rounded-lg p-3 flex items-center justify-center min-h-[120px] max-h-[240px] overflow-hidden border border-ash-grey-800">
+            <div className="p-5 flex flex-col gap-4">
+              <div className="w-full bg-blue_slate-100 rounded-xl p-3 flex items-center justify-center min-h-[120px] max-h-[240px] overflow-hidden border border-blue_slate-500/30">
                 <img
                   src={selectedCropSegment.crop_image_url || ''}
                   alt="Enlarged crop"
@@ -754,54 +756,54 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
               </div>
 
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between text-xs text-base-content/60 font-mono">
+                <div className="flex items-center justify-between text-xs text-blue_slate-600 dark:text-blue_slate-800 font-mono">
                   <span>
                     Thời gian: {formatTimestamp(selectedCropSegment.start_time)} → {formatTimestamp(selectedCropSegment.end_time)}
                   </span>
                   <span>Độ tin cậy: {Math.round(selectedCropSegment.confidence * 100)}%</span>
                 </div>
 
-                <div className="p-3 bg-base-200/50 rounded-lg border border-base-300 text-sm font-medium">
+                <div className="p-3 bg-base-100/80 rounded-xl border border-blue_slate-500/25 text-sm font-medium text-base-content">
                   {selectedCropSegment.text}
                 </div>
               </div>
             </div>
 
-            <div className="modal-action px-4 py-3 bg-base-200/50 m-0 border-t border-base-300">
+            <div className="modal-action px-5 py-3 bg-base-300/50 m-0 border-t border-blue_slate-500/20">
               <button
                 type="button"
                 onClick={() => setSelectedCropSegment(null)}
-                className="btn btn-sm btn-primary"
+                className="btn btn-sm btn-primary rounded-lg font-semibold"
               >
                 Đóng
               </button>
             </div>
           </div>
-          <div className="modal-backdrop" onClick={() => setSelectedCropSegment(null)} />
+          <div className="modal-backdrop bg-blue_slate-100/50" onClick={() => setSelectedCropSegment(null)} />
         </div>
       )}
 
       {/* Split Segment Dialog (daisyUI modal) */}
       {splitDialogSegment && (
-        <div className="modal modal-open">
-          <div className="modal-box max-w-md p-0 overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 bg-base-200 border-b border-base-300">
+        <div className="modal modal-open bg-blue_slate-100/70 backdrop-blur-xs">
+          <div className="modal-box max-w-md p-0 overflow-hidden bg-base-200 border border-blue_slate-500/30 rounded-xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-3.5 bg-base-300/80 border-b border-blue_slate-500/25">
               <div className="flex items-center gap-2">
                 <Scissors className="w-4 h-4 text-primary" />
-                <h3 className="font-bold text-sm">Tách đoạn phụ đề làm 2</h3>
+                <h3 className="font-bold text-sm text-base-content">Tách đoạn phụ đề làm 2</h3>
               </div>
               <button
                 type="button"
                 onClick={() => setSplitDialogSegment(null)}
-                className="btn btn-ghost btn-xs btn-square"
+                className="btn btn-ghost btn-xs btn-square text-base-content/70 hover:text-base-content rounded-lg"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-4 flex flex-col gap-3 text-xs">
+            <div className="p-5 flex flex-col gap-3.5 text-xs">
               <div>
-                <label className="label label-text font-semibold py-1">
+                <label className="label label-text font-semibold py-1 text-base-content/85">
                   Mốc thời gian tách (giây)
                 </label>
                 <input
@@ -811,58 +813,74 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
                   max={splitDialogSegment.end_time - 0.05}
                   value={splitTime}
                   onChange={(e) => setSplitTime(parseFloat(e.target.value))}
-                  className="input input-bordered input-sm w-full font-mono"
+                  className="input input-sm w-full font-mono bg-base-100 border-blue_slate-500/30 focus:border-glaucous-500 rounded-lg text-xs"
                 />
-                <span className="text-[11px] text-base-content/50 mt-1 block">
+                <span className="text-[11px] text-blue_slate-600 dark:text-blue_slate-800 mt-1 block">
                   Giới hạn: {splitDialogSegment.start_time.toFixed(2)}s đến {splitDialogSegment.end_time.toFixed(2)}s
                 </span>
               </div>
 
               <div>
-                <label className="label label-text font-semibold py-1">
+                <label className="label label-text font-semibold py-1 text-base-content/85">
                   Đoạn 1 ({splitDialogSegment.start_time.toFixed(2)}s - {splitTime.toFixed(2)}s)
                 </label>
                 <textarea
                   rows={2}
                   value={splitFirstText}
                   onChange={(e) => setSplitFirstText(e.target.value)}
-                  className="textarea textarea-bordered textarea-sm w-full"
+                  className="textarea textarea-bordered textarea-sm w-full bg-base-100  focus:border-glaucous-500 rounded-lg text-xs font-sans"
                 />
               </div>
 
               <div>
-                <label className="label label-text font-semibold py-1">
+                <label className="label label-text font-semibold py-1 text-base-content/85">
                   Đoạn 2 ({splitTime.toFixed(2)}s - {splitDialogSegment.end_time.toFixed(2)}s)
                 </label>
                 <textarea
                   rows={2}
                   value={splitSecondText}
                   onChange={(e) => setSplitSecondText(e.target.value)}
-                  className="textarea textarea-bordered textarea-sm w-full"
+                  className="textarea textarea-bordered textarea-sm w-full bg-base-100  focus:border-glaucous-500 rounded-lg text-xs font-sans"
                 />
               </div>
             </div>
 
-            <div className="modal-action px-4 py-3 bg-base-200/50 m-0 border-t border-base-300 gap-2">
+            <div className="modal-action px-5 py-3.5 bg-base-300/50 m-0 border-t border-blue_slate-500/20 gap-2">
               <button
                 type="button"
                 onClick={() => setSplitDialogSegment(null)}
-                className="btn btn-sm btn-ghost"
+                className="btn btn-sm btn-ghost rounded-lg font-medium"
               >
                 Hủy
               </button>
               <button
                 type="button"
                 onClick={handleConfirmSplit}
-                className="btn btn-sm btn-primary"
+                className="btn btn-sm btn-primary rounded-lg font-semibold shadow-sm"
               >
                 Xác nhận tách
               </button>
             </div>
           </div>
-          <div className="modal-backdrop" onClick={() => setSplitDialogSegment(null)} />
+          <div className="modal-backdrop bg-blue_slate-100/50" onClick={() => setSplitDialogSegment(null)} />
         </div>
       )}
+
+      {/* Delete Confirmation Modal using DaisyUI */}
+      <ConfirmModal
+        isOpen={!!pendingDeleteSegmentId}
+        title="Xác nhận xóa câu phụ đề"
+        message="Bạn có chắc chắn muốn xóa câu phụ đề này? Thao tác này sẽ xóa vĩnh viễn đoạn phụ đề đã chọn."
+        confirmLabel="Xóa câu này"
+        cancelLabel="Hủy"
+        onConfirm={async () => {
+          if (pendingDeleteSegmentId) {
+            await onDeleteSegment(pendingDeleteSegmentId);
+            setPendingDeleteSegmentId(null);
+          }
+        }}
+        onCancel={() => setPendingDeleteSegmentId(null)}
+      />
     </div>
   );
 };

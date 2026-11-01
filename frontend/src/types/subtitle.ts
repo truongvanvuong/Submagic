@@ -44,6 +44,10 @@ export interface SubtitleOverlaySettings {
   position: 'bottom' | 'center' | 'top';
   background: 'none' | 'translucent' | 'solid';
   languageMode: 'original' | 'translated' | 'bilingual';
+  positionOffset?: {
+    x: number; // 0.0 - 1.0 (Center X relative to video width)
+    y: number; // 0.0 - 1.0 (Center Y relative to video height)
+  };
 }
 
 export const DEFAULT_SUBTITLE_SETTINGS: SubtitleOverlaySettings = {
@@ -52,6 +56,7 @@ export const DEFAULT_SUBTITLE_SETTINGS: SubtitleOverlaySettings = {
   position: 'bottom',
   background: 'translucent',
   languageMode: 'bilingual',
+  positionOffset: { x: 0.5, y: 0.88 },
 };
 
 /**

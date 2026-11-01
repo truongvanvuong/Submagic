@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   History,
   X,
@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import type { ExtractionHistoryItem } from '../types/subtitle';
 import { getHistoryDownloadUrl } from '../services/api';
+import ConfirmModal from './ConfirmModal';
 
 export interface HistoryDrawerProps {
   isOpen: boolean;
@@ -20,6 +21,7 @@ export interface HistoryDrawerProps {
   historyList: ExtractionHistoryItem[];
   onSelectProject: (projectId: string) => void;
   onDeleteHistory: (historyId: string) => void;
+  onDeleteHistoryBulk?: (historyIds: string[]) => void | Promise<void>;
   activeProjectId?: string | null;
 }
 
@@ -52,26 +54,40 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
   historyList,
   onSelectProject,
   onDeleteHistory,
+  onDeleteHistoryBulk,
   activeProjectId,
 }) => {
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [isBulkConfirmOpen, setIsBulkConfirmOpen] = useState<boolean>(false);
+
   if (!isOpen) return null;
 
+  // Chỉ giữ các id còn tồn tại trong danh sách hiện tại
+  const validSelected = selectedIds.filter((id) => historyList.some((h) => h.id === id));
+  const allSelected = historyList.length > 0 && validSelected.length === historyList.length;
+  const someSelected = validSelected.length > 0 && !allSelected;
+
+  const toggleOne = (id: string) =>
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const toggleAll = () => setSelectedIds(allSelected ? [] : historyList.map((h) => h.id));
+
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden bg-ash-grey-950/60 backdrop-blur-xs transition-opacity animate-in fade-in">
+    <div className="fixed inset-0 z-50 overflow-hidden bg-blue_slate-100/70 backdrop-blur-xs transition-opacity animate-in fade-in">
       {/* Slide-over panel */}
       <div className="fixed inset-y-0 right-0 flex max-w-full pl-10">
-        <div className="w-screen max-w-md bg-base-100 border-l border-base-200 shadow-2xl flex flex-col">
+        <div className="w-screen max-w-md bg-base-200 border-l border-blue_slate-500/25 shadow-2xl flex flex-col font-sans">
           {/* Drawer Header */}
-          <div className="flex items-center justify-between px-5 py-4 bg-base-200/50 border-b border-base-300">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 bg-primary/10 text-primary rounded-lg">
+          <div className="flex items-center justify-between px-5 py-4 bg-base-300/80 border-b border-blue_slate-500/20">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-glaucous-500/15 text-glaucous-600 dark:text-pale_sky-400 rounded-xl border border-blue_slate-500/30 shadow-xs">
                 <History className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="font-bold text-base text-base-content leading-tight">
+                <h3 className="font-bold text-base text-base-content leading-tight tracking-tight">
                   Lịch sử trích xuất
                 </h3>
-                <p className="text-xs text-base-content/60">
+                <p className="text-xs text-blue_slate-600 dark:text-blue_slate-800 mt-0.5">
                   {historyList.length} lần trích xuất đã lưu
                 </p>
               </div>
@@ -79,22 +95,51 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="btn btn-sm btn-circle btn-ghost"
+              className="btn btn-sm btn-circle btn-ghost text-base-content/70 hover:text-base-content"
               title="Đóng (Close)"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
+          {/* Bulk selection toolbar */}
+          {historyList.length > 0 && onDeleteHistoryBulk && (
+            <div className="flex items-center justify-between px-5 py-2.5 bg-base-200 border-b border-blue_slate-500/20">
+              <label className="label cursor-pointer gap-2 p-0">
+                <input
+                  type="checkbox"
+                  className="checkbox checkbox-primary checkbox-sm"
+                  checked={allSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = someSelected;
+                  }}
+                  onChange={toggleAll}
+                />
+                <span className="label-text text-xs font-semibold">
+                  {validSelected.length > 0 ? `Đã chọn ${validSelected.length}/${historyList.length}` : 'Chọn tất cả'}
+                </span>
+              </label>
+              <button
+                type="button"
+                disabled={validSelected.length === 0}
+                onClick={() => setIsBulkConfirmOpen(true)}
+                className="btn btn-xs btn-error gap-1 rounded-lg"
+              >
+                <Trash2 className="w-3 h-3" />
+                Xóa đã chọn
+              </button>
+            </div>
+          )}
+
           {/* Drawer Content */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {historyList.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-64 text-center p-6 text-base-content/50">
-                <div className="w-16 h-16 rounded-full bg-base-200 flex items-center justify-center mb-3">
-                  <History className="w-8 h-8 text-base-content/40" />
+                <div className="w-16 h-16 rounded-2xl bg-blue_slate-200/50 border border-blue_slate-500/30 flex items-center justify-center mb-3 shadow-md">
+                  <History className="w-8 h-8 text-glaucous-600 dark:text-pale_sky-400" />
                 </div>
-                <p className="font-medium text-sm text-base-content/80">Chưa có lịch sử trích xuất</p>
-                <p className="text-xs text-base-content/50 mt-1 max-w-xs">
+                <p className="font-semibold text-sm text-base-content">Chưa có lịch sử trích xuất</p>
+                <p className="text-xs text-base-content/50 mt-1 max-w-xs leading-relaxed">
                   Mỗi khi hoàn thành trích xuất STT hoặc OCR, video và phụ đề sẽ tự động lưu bền vững tại đây.
                 </p>
               </div>
@@ -104,17 +149,26 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                 return (
                   <div
                     key={item.id}
-                    className={`card bg-base-100 border transition-all ${
+                    className={`card rounded-xl transition-smooth ${
                       isActive
-                        ? 'border-primary ring-1 ring-primary/40 shadow-sm'
-                        : 'border-base-200 hover:border-base-300 shadow-xs'
+                        ? 'bg-glaucous-500/10 border border-glaucous-500 ring-1 ring-glaucous-400/50 shadow-sm'
+                        : 'bg-base-100 border border-blue_slate-500/25 hover:border-glaucous-500/40 shadow-xs'
                     }`}
                   >
-                    <div className="card-body p-4 gap-2">
-                      {/* Top row: Video name + Mode badge */}
+                    <div className="card-body p-4 gap-2.5">
+                      {/* Top row: Checkbox + Video name + Mode badge */}
                       <div className="flex items-start justify-between gap-2">
+                        {onDeleteHistoryBulk && (
+                          <input
+                            type="checkbox"
+                            className="checkbox checkbox-primary checkbox-xs mt-0.5 shrink-0"
+                            checked={validSelected.includes(item.id)}
+                            onChange={() => toggleOne(item.id)}
+                            aria-label={`Chọn ${item.project_name}`}
+                          />
+                        )}
                         <h4
-                          className="font-semibold text-xs text-base-content line-clamp-1"
+                          className="font-semibold text-xs text-base-content line-clamp-1 tracking-tight flex-1"
                           title={item.project_name}
                         >
                           {item.project_name}
@@ -130,7 +184,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                             </span>
                           )}
                           {item.detected_language && (
-                            <span className="badge badge-neutral badge-sm text-[10px] uppercase font-mono">
+                            <span className="badge badge-neutral badge-sm text-[10px] uppercase font-mono bg-glaucous-500 text-ghost_white-DEFAULT border-none">
                               {item.detected_language}
                             </span>
                           )}
@@ -138,9 +192,9 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                       </div>
 
                       {/* Info row: Date, duration, segment count */}
-                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-base-content/60">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-3 h-3 text-base-content/40" />
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-base-content/65">
+                        <span className="flex items-center gap-1 font-mono">
+                          <Calendar className="w-3 h-3 text-glaucous-600 dark:text-pale_sky-400" />
                           {formatDate(item.created_at)}
                         </span>
                         <span className="flex items-center gap-1">
@@ -148,8 +202,8 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                           {item.segment_count} câu sub
                         </span>
                         {item.duration_sec > 0 && (
-                          <span className="flex items-center gap-1">
-                            <Clock className="w-3 h-3 text-base-content/40" />
+                          <span className="flex items-center gap-1 font-mono">
+                            <Clock className="w-3 h-3 text-glaucous-600 dark:text-pale_sky-400" />
                             {formatDuration(item.duration_sec)}
                             {item.elapsed_sec > 0 && ` (${item.elapsed_sec}s)`}
                           </span>
@@ -157,7 +211,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                       </div>
 
                       {/* Action buttons */}
-                      <div className="flex items-center justify-between pt-2 border-t border-base-200 mt-1">
+                      <div className="flex items-center justify-between pt-2.5 border-t border-blue_slate-500/20 mt-1">
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
@@ -165,8 +219,8 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                               onSelectProject(item.project_id);
                               onClose();
                             }}
-                            className={`btn btn-xs ${
-                              isActive ? 'btn-primary' : 'btn-outline btn-primary'
+                            className={`btn btn-xs rounded-lg font-semibold cursor-pointer ${
+                              isActive ? 'btn-primary' : 'btn-outline border-blue_slate-500/30 text-base-content hover:bg-base-300'
                             }`}
                           >
                             <Eye className="w-3 h-3" />
@@ -177,7 +231,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                             <a
                               href={getHistoryDownloadUrl(item.id)}
                               download
-                              className="btn btn-xs btn-outline btn-success"
+                              className="btn btn-xs btn-outline btn-success rounded-lg font-semibold"
                               title="Tải phụ đề .SRT"
                             >
                               <Download className="w-3 h-3" />
@@ -188,12 +242,8 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
 
                         <button
                           type="button"
-                          onClick={() => {
-                            if (window.confirm(`Bạn có chắc muốn xóa lịch sử này?`)) {
-                              onDeleteHistory(item.id);
-                            }
-                          }}
-                          className="btn btn-xs btn-ghost text-error hover:bg-error/10"
+                          onClick={() => setPendingDeleteId(item.id)}
+                          className="btn btn-xs btn-ghost text-error hover:bg-error/10 rounded-lg cursor-pointer"
                           title="Xóa khỏi lịch sử"
                         >
                           <Trash2 className="w-3 h-3" />
@@ -207,11 +257,42 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
           </div>
 
           {/* Footer */}
-          <div className="p-3 bg-base-200/50 border-t border-base-300 text-center text-xs text-base-content/50">
+          <div className="p-3.5 bg-base-300/60 border-t border-blue_slate-500/20 text-center text-xs text-blue_slate-600 dark:text-blue_slate-800">
             Dữ liệu lịch sử được lưu trữ bền vững trong cơ sở dữ liệu SQLite
           </div>
         </div>
       </div>
+
+      {/* Confirmation Modal using DaisyUI */}
+      <ConfirmModal
+        isOpen={!!pendingDeleteId}
+        title="Xác nhận xóa bản ghi lịch sử"
+        message="Bạn có chắc chắn muốn xóa mục lịch sử này khỏi cơ sở dữ liệu? Dữ liệu này sẽ không thể khôi phục."
+        confirmLabel="Xóa lịch sử"
+        cancelLabel="Hủy"
+        onConfirm={() => {
+          if (pendingDeleteId) {
+            onDeleteHistory(pendingDeleteId);
+            setPendingDeleteId(null);
+          }
+        }}
+        onCancel={() => setPendingDeleteId(null)}
+      />
+
+      <ConfirmModal
+        isOpen={isBulkConfirmOpen}
+        title={`Xóa ${validSelected.length} mục lịch sử`}
+        message={`Bạn có chắc chắn muốn xóa ${validSelected.length} mục đã chọn khỏi cơ sở dữ liệu? Dữ liệu này sẽ không thể khôi phục.`}
+        confirmLabel={`Xóa ${validSelected.length} mục`}
+        cancelLabel="Hủy"
+        onConfirm={async () => {
+          const ids = validSelected;
+          setIsBulkConfirmOpen(false);
+          setSelectedIds([]);
+          await onDeleteHistoryBulk?.(ids);
+        }}
+        onCancel={() => setIsBulkConfirmOpen(false)}
+      />
     </div>
   );
 };

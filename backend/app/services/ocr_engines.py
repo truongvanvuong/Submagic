@@ -447,8 +447,9 @@ class OCREngineCache:
         )
         contents.append(prompt)
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        from app.utils.gemini_client import generate_content_with_resilience
+        response = generate_content_with_resilience(
+            client=client,
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",

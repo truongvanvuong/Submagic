@@ -62,7 +62,7 @@ def extract_text_binary_mask(
     1. Luminance threshold & morphological Top-Hat for bright text strokes.
     2. Canny/gradient stroke-edge adjacency so large uniform bright background regions
        (sky, walls, flashes) without internal character edges are suppressed.
-    3. Connected-component filtering to remove tiny 1-2px noise specks.
+    3. Vectorized Connected-component filtering (NumPy LUT) to remove tiny 1-2px noise specks.
     """
     if roi_bgr is None or roi_bgr.size == 0:
         return np.zeros((1, 1), dtype=np.uint8)
@@ -72,35 +72,42 @@ def extract_text_binary_mask(
     else:
         gray = roi_bgr.copy()
 
-    h, w = gray.shape[:2]
-    if h < 4 or w < 4:
-        return np.zeros((h, w), dtype=np.uint8)
+    orig_h, orig_w = gray.shape[:2]
+    if orig_h < 4 or orig_w < 4:
+        return np.zeros((orig_h, orig_w), dtype=np.uint8)
 
+    # Downscale for mask calculation if height > 80 (preserves contours while 4-5x faster)
+    if orig_h > 80:
+        scale = 72.0 / float(orig_h)
+        work_w = max(16, int(round(orig_w * scale)))
+        work_gray = cv2.resize(gray, (work_w, 72), interpolation=cv2.INTER_AREA)
+    else:
+        work_gray = gray
+
+    h, w = work_gray.shape[:2]
     clamped_thresh = max(50, min(254, int(luma_threshold)))
 
     # 1. Direct luminance threshold for bright subtitle characters
-    _, bright_mask = cv2.threshold(gray, clamped_thresh, 255, cv2.THRESH_BINARY)
+    _, bright_mask = cv2.threshold(work_gray, clamped_thresh, 255, cv2.THRESH_BINARY)
 
     # 2. Top-Hat transform to isolate bright thin strokes over moderately bright backgrounds
     kw = max(9, min(31, (w // 20) | 1))
     kh = max(7, min(21, (h // 4) | 1))
     tophat_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kw, kh))
-    tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, tophat_kernel)
+    tophat = cv2.morphologyEx(work_gray, cv2.MORPH_TOPHAT, tophat_kernel)
     tophat_cutoff = max(30, min(90, (255 - clamped_thresh) // 2 + 15))
     _, tophat_mask = cv2.threshold(tophat, tophat_cutoff, 255, cv2.THRESH_BINARY)
 
     # 3. Canny edge detection around character strokes
-    edges = cv2.Canny(gray, 50, 150)
+    edges = cv2.Canny(work_gray, 50, 150)
     edge_dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     edge_zone = cv2.dilate(edges, edge_dilate_kernel, iterations=1)
 
     # Bright pixels must sit near character edges (eliminates interior of large bright background patches)
     stroke_candidates = cv2.bitwise_and(bright_mask, edge_zone)
-    # Reinforce interior of thick character strokes that pass both luminance and Top-Hat local contrast
     tophat_bright = cv2.bitwise_and(bright_mask, tophat_mask)
-    # Also capture high local-contrast strokes slightly below luma_threshold when adjacent to strong edges
     relaxed_thresh = max(135, clamped_thresh - 30)
-    _, relaxed_bright = cv2.threshold(gray, relaxed_thresh, 255, cv2.THRESH_BINARY)
+    _, relaxed_bright = cv2.threshold(work_gray, relaxed_thresh, 255, cv2.THRESH_BINARY)
     tophat_edges = cv2.bitwise_and(
         cv2.bitwise_and(relaxed_bright, tophat_mask), edge_zone
     )
@@ -112,23 +119,31 @@ def extract_text_binary_mask(
     close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     closed = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, close_kernel, iterations=1)
 
-    # 4. Connected components filter: remove isolated specks (< 6 px) and full-frame flash blobs
+    # 4. Connected components filter (Vectorized NumPy LUT): remove isolated specks (< 6 px) and full-frame flash blobs
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(closed, connectivity=8)
     if num_labels <= 1:
-        return np.zeros((h, w), dtype=np.uint8)
+        return np.zeros((orig_h, orig_w), dtype=np.uint8)
 
-    clean_mask = np.zeros((h, w), dtype=np.uint8)
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    comp_ws = stats[1:, cv2.CC_STAT_WIDTH]
+    comp_hs = stats[1:, cv2.CC_STAT_HEIGHT]
     max_blob_area = int(h * w * 0.55)
-    for label_idx in range(1, num_labels):
-        area = int(stats[label_idx, cv2.CC_STAT_AREA])
-        comp_w = int(stats[label_idx, cv2.CC_STAT_WIDTH])
-        comp_h = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
-        if area < 6 or area > max_blob_area:
-            continue
-        if comp_w >= int(w * 0.92) and comp_h >= int(h * 0.90):
-            continue
-        clean_mask[labels == label_idx] = 255
 
+    valid_mask = (
+        (areas >= 6)
+        & (areas <= max_blob_area)
+        & ~((comp_ws >= int(w * 0.92)) & (comp_hs >= int(h * 0.90)))
+    )
+    valid_labels = np.where(valid_mask)[0] + 1
+    if len(valid_labels) == 0:
+        clean_mask = np.zeros((h, w), dtype=np.uint8)
+    else:
+        lut = np.zeros(num_labels, dtype=np.uint8)
+        lut[valid_labels] = 255
+        clean_mask = lut[labels]
+
+    if orig_h > 80:
+        return cv2.resize(clean_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
     return clean_mask
 
 
@@ -265,7 +280,10 @@ class ThreeLayerVisualFilter:
         self.frames_skipped_by_layer3: int = 0
 
     def process_frame(
-        self, roi_bgr: np.ndarray, timestamp_sec: float
+        self,
+        roi_bgr: np.ndarray,
+        timestamp_sec: float,
+        precomputed_mask: np.ndarray | None = None,
     ) -> list[VisualSubtitleSpan]:
         """
         Process one sampled ROI frame at `timestamp_sec`.
@@ -276,7 +294,11 @@ class ThreeLayerVisualFilter:
         next_t = round(t + self.frame_step_sec, 3)
 
         # Layer 1: Extract high-contrast text binary mask
-        mask = extract_text_binary_mask(roi_bgr, luma_threshold=self.luma_threshold)
+        mask = (
+            precomputed_mask
+            if precomputed_mask is not None
+            else extract_text_binary_mask(roi_bgr, luma_threshold=self.luma_threshold)
+        )
         has_text = has_text_activity(mask)
         if has_text:
             self.frames_with_text += 1
@@ -287,7 +309,8 @@ class ThreeLayerVisualFilter:
             # No text in current frame -> close active span or multi-frame stabilizing span, discard 1-frame flash
             if self._state == "ACTIVE" and self._active_span is not None:
                 self._active_span.end_time = max(
-                    round(self._active_span.start_time + 0.15, 3), t
+                    round(self._active_span.start_time + 0.10, 3),
+                    min(self._active_span.end_time, t),
                 )
                 completed.append(self._active_span)
             elif (
@@ -296,7 +319,8 @@ class ThreeLayerVisualFilter:
                 and self._pending_span.sampled_frames > self.stability_frames
             ):
                 self._pending_span.end_time = max(
-                    round(self._pending_span.start_time + 0.15, 3), t
+                    round(self._pending_span.start_time + 0.10, 3),
+                    min(self._pending_span.end_time, t),
                 )
                 self.ocr_triggers_count += 1
                 completed.append(self._pending_span)
@@ -454,14 +478,14 @@ class FuzzySubtitleDeduplicator:
     """
     Merges consecutive OCR subtitle segments whose normalized Levenshtein similarity
     (`rapidfuzz.fuzz.ratio`) is >= `fuzzy_match_threshold` (default 85%) and whose
-    time gap is <= `max_merge_gap_sec` (default 0.40s).
+    time gap is <= `max_merge_gap_sec` (default 0.20s).
     Automatically retains the text and `crop_image_url` of the higher-confidence recognition.
     """
 
     def __init__(
         self,
         fuzzy_match_threshold: float = 85.0,
-        max_merge_gap_sec: float = 0.40,
+        max_merge_gap_sec: float = 0.20,
     ) -> None:
         self.fuzzy_match_threshold = float(fuzzy_match_threshold)
         self.max_merge_gap_sec = float(max_merge_gap_sec)
@@ -508,7 +532,7 @@ class FuzzySubtitleDeduplicator:
 def deduplicate_ocr_segments(
     segments: list[SubtitleSegment],
     fuzzy_match_threshold: float = 85.0,
-    max_merge_gap_sec: float = 0.40,
+    max_merge_gap_sec: float = 0.20,
 ) -> list[SubtitleSegment]:
     """
     Standalone helper to deduplicate and merge a list of OCR `SubtitleSegment` items
@@ -634,7 +658,7 @@ async def run_ocr_pipeline(
         )
 
         def _frame_scanner_worker() -> None:
-            """Decode video frames, crop ROI + Exclusion Masks, and run 3-Layer OpenCV Filter."""
+            """Decode video frames, crop ROI + Exclusion Masks, and run 3-Layer OpenCV Filter with Coarse-to-Fine refinement."""
             cap = cv2.VideoCapture(str(video_path))
             if not cap.isOpened():
                 loop.call_soon_threadsafe(
@@ -648,10 +672,38 @@ async def run_ocr_pipeline(
                 return
 
             try:
+                video_w = int(meta.width or 1280)
+                video_h = int(meta.height or 720)
+                rx1, ry1, rx2, ry2 = req.roi_config.main_roi.to_pixel_rect(video_w, video_h)
+                ex_rects: list[tuple[int, int, int, int]] = []
+                for em in req.roi_config.exclusion_masks:
+                    mx1, my1, mx2, my2 = em.to_pixel_rect(video_w, video_h)
+                    ix1 = max(0, mx1 - rx1)
+                    iy1 = max(0, my1 - ry1)
+                    ix2 = min(rx2 - rx1, mx2 - rx1)
+                    iy2 = min(ry2 - ry1, my2 - ry1)
+                    if ix2 > ix1 and iy2 > iy1:
+                        ex_rects.append((ix1, iy1, ix2, iy2))
+
+                def _fast_crop(frame: np.ndarray) -> np.ndarray:
+                    fh, fw = frame.shape[:2]
+                    if fw == video_w and fh == video_h:
+                        cropped = frame[ry1:ry2, rx1:rx2]
+                        if ex_rects:
+                            cropped = cropped.copy()
+                            for e_x1, e_y1, e_x2, e_y2 in ex_rects:
+                                cropped[e_y1:e_y2, e_x1:e_x2] = 0
+                        return cropped
+                    return crop_and_mask_roi(frame, req.roi_config)
+
                 frame_idx = 0
                 last_progress_report = 0.0
+                prev_coarse_idx: int | None = None
+                prev_had_text: bool = False
+                prev_coarse_mask: np.ndarray | None = None
+
                 while not cancel_ev.is_set():
-                    if frame_idx % frame_step != 0:
+                    if frame_step > 1 and frame_idx % frame_step != 0:
                         if not cap.grab():
                             break
                         frame_idx += 1
@@ -662,12 +714,137 @@ async def run_ocr_pipeline(
                         break
 
                     timestamp_sec = frame_idx / video_fps
-                    roi_bgr = crop_and_mask_roi(frame_bgr, req.roi_config)
-                    completed_spans = visual_filter.process_frame(roi_bgr, timestamp_sec)
+                    roi_bgr = _fast_crop(frame_bgr)
+                    curr_mask = extract_text_binary_mask(roi_bgr, luma_threshold=req.luma_threshold)
+                    curr_has_text = has_text_activity(curr_mask)
+
+                    refined_start_time: float | None = None
+                    refined_end_time: float | None = None
+
+                    # Coarse-to-fine boundary refinement on state transitions when frame_step > 1
+                    if frame_step > 1 and prev_coarse_idx is not None:
+                        start_win = prev_coarse_idx + 1
+                        end_win = frame_idx - 1
+
+                        if end_win >= start_win:
+                            is_cut = (
+                                prev_had_text
+                                and curr_has_text
+                                and prev_coarse_mask is not None
+                                and compute_mask_visual_diff(prev_coarse_mask, curr_mask)
+                                >= req.visual_diff_threshold
+                            )
+                            need_refine = (
+                                (not prev_had_text and curr_has_text)
+                                or (prev_had_text and not curr_has_text)
+                                or is_cut
+                            )
+
+                            if need_refine:
+                                try:
+                                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_win)
+                                    window_rois: list[np.ndarray] = []
+                                    for _ in range(start_win, frame_idx):
+                                        ok_p, f_p = cap.read()
+                                        if not ok_p or f_p is None:
+                                            break
+                                        window_rois.append(_fast_crop(f_p))
+                                    cap.grab()  # Advance past frame_idx (already processed)
+
+                                    if window_rois:
+                                        # 1. Text appearance: blank -> text (binary search for first frame with text)
+                                        if not prev_had_text and curr_has_text:
+                                            low, high = 0, len(window_rois) - 1
+                                            ans_offset = len(window_rois)
+                                            while low <= high:
+                                                mid = (low + high) // 2
+                                                m_mid = extract_text_binary_mask(
+                                                    window_rois[mid],
+                                                    luma_threshold=req.luma_threshold,
+                                                )
+                                                if has_text_activity(m_mid):
+                                                    ans_offset = mid
+                                                    high = mid - 1
+                                                else:
+                                                    low = mid + 1
+                                            found_idx = start_win + ans_offset
+                                            refined_start_time = round(found_idx / video_fps, 3)
+
+                                        # 2. Text disappearance: text -> blank (binary search for last frame with text)
+                                        elif prev_had_text and not curr_has_text:
+                                            low, high = 0, len(window_rois) - 1
+                                            ans_offset = -1
+                                            while low <= high:
+                                                mid = (low + high) // 2
+                                                m_mid = extract_text_binary_mask(
+                                                    window_rois[mid],
+                                                    luma_threshold=req.luma_threshold,
+                                                )
+                                                if has_text_activity(m_mid):
+                                                    ans_offset = mid
+                                                    low = mid + 1
+                                                else:
+                                                    high = mid - 1
+                                            last_text_idx = (
+                                                (start_win + ans_offset)
+                                                if ans_offset >= 0
+                                                else prev_coarse_idx
+                                            )
+                                            refined_end_time = round(
+                                                (last_text_idx + 1) / video_fps, 3
+                                            )
+
+                                        # 3. Direct cut between subtitle lines (binary search for first frame differing from prev text)
+                                        elif is_cut:
+                                            assert prev_coarse_mask is not None
+                                            low, high = 0, len(window_rois) - 1
+                                            ans_offset = len(window_rois)
+                                            while low <= high:
+                                                mid = (low + high) // 2
+                                                m_mid = extract_text_binary_mask(
+                                                    window_rois[mid],
+                                                    luma_threshold=req.luma_threshold,
+                                                )
+                                                if (
+                                                    not has_text_activity(m_mid)
+                                                    or compute_mask_visual_diff(
+                                                        prev_coarse_mask, m_mid
+                                                    )
+                                                    >= req.visual_diff_threshold
+                                                ):
+                                                    ans_offset = mid
+                                                    high = mid - 1
+                                                else:
+                                                    low = mid + 1
+                                            cut_idx = start_win + ans_offset
+                                            cut_t = round(cut_idx / video_fps, 3)
+                                            refined_end_time = cut_t
+                                            refined_start_time = cut_t
+                                except Exception as e_refine:
+                                    logger.debug("Refine error: %s", e_refine)
+                                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx + 1)
+
+                    completed_spans = visual_filter.process_frame(
+                        roi_bgr, timestamp_sec, precomputed_mask=curr_mask
+                    )
+
+                    if refined_start_time is not None:
+                        if visual_filter._state == "ACTIVE" and visual_filter._active_span is not None:
+                            visual_filter._active_span.start_time = refined_start_time
+                        elif visual_filter._state == "STABILIZING" and visual_filter._pending_span is not None:
+                            visual_filter._pending_span.start_time = refined_start_time
+
+                    if refined_end_time is not None:
+                        for sp in completed_spans:
+                            sp.end_time = max(round(sp.start_time + 0.05, 3), refined_end_time)
 
                     pct = min(95.0, 5.0 + (timestamp_sec / duration_sec) * 88.0)
                     for sp in completed_spans:
                         loop.call_soon_threadsafe(span_queue.put_nowait, (sp, pct))
+
+                    prev_coarse_idx = frame_idx
+                    prev_had_text = curr_has_text
+                    prev_coarse_mask = curr_mask
 
                     if pct - last_progress_report >= 5.0 and not completed_spans:
                         last_progress_report = pct
@@ -790,7 +967,7 @@ async def run_ocr_pipeline(
                         project_id=req.project_id,
                         index=len(deduplicator.segments) + 1,
                         start_time=round(span.start_time, 3),
-                        end_time=round(max(span.start_time + 0.15, span.end_time), 3),
+                        end_time=round(max(span.start_time + 0.05, span.end_time), 3),
                         text=cleaned_text,
                         confidence=round(float(ocr_res.confidence or 0.85), 4),
                         source="ocr",

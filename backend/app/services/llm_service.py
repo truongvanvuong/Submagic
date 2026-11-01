@@ -34,10 +34,12 @@ def _call_gemini_batch_postprocess(
     fix_ocr_spelling: bool,
     translate_to: str | None,
     api_key: str,
+    preferred_model: str | None = None,
 ) -> list[dict]:
-    """Send a batch of subtitle segments to Gemini 2.5 Flash for fast spellcheck and/or translation."""
+    """Send a batch of subtitle segments to Gemini for fast spellcheck and/or translation with automatic model fallback."""
     from google import genai
     from google.genai import types
+    from app.utils.gemini_client import generate_content_with_resilience
 
     client = genai.Client(api_key=api_key)
 
@@ -71,16 +73,30 @@ def _call_gemini_batch_postprocess(
         + json.dumps(payload_items, ensure_ascii=False)
     )
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
+    response = generate_content_with_resilience(
+        client=client,
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.1,
         ),
+        preferred_model=preferred_model,
     )
-    raw_text = response.text or "[]"
-    parsed = json.loads(raw_text)
+
+    raw_text = (response.text or "[]").strip()
+    if raw_text.startswith("```"):
+        lines = raw_text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw_text = "\n".join(lines).strip()
+
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return []
+
     if isinstance(parsed, dict):
         parsed = parsed.get("items") or parsed.get("subtitles") or [parsed]
     return parsed if isinstance(parsed, list) else []
@@ -99,30 +115,39 @@ async def run_llm_postprocess_pipeline(
     cancel_ev = cancel_event or asyncio.Event()
     start_wall = time.perf_counter()
 
-    project = await db.get_project(req.project_id)
-    if not project:
-        raise ValueError(f"Project not found: {req.project_id}")
-
-    api_key = req.gemini_api_key or settings.gemini_api_key
-    if not api_key:
-        raise ValueError("Thiếu Gemini API Key để chạy AI sửa lỗi chính tả / dịch thuật.")
-
-    segments = list(project.segments)
-    if not segments:
-        return []
-
-    await db.update_project_status(req.project_id, status=JobStatus.RUNNING, progress=1.0)
-    await emit(
-        WebSocketEvent(
-            event="job_started",
-            project_id=req.project_id,
-            job_id=job_id,
-            progress=1.0,
-            message=f"Bắt đầu dịch và xử lý AI ({len(segments)} dòng phụ đề)...",
-        )
-    )
-
     try:
+        project = await db.get_project(req.project_id)
+        if not project:
+            raise ValueError(f"Project not found: {req.project_id}")
+
+        api_key = req.gemini_api_key or settings.gemini_api_key
+        if not api_key:
+            raise ValueError("Thiếu Gemini API Key để chạy AI sửa lỗi chính tả / dịch thuật.")
+
+        segments = list(project.segments)
+        if not segments:
+            await emit(
+                WebSocketEvent(
+                    event="job_completed",
+                    project_id=req.project_id,
+                    job_id=job_id,
+                    progress=100.0,
+                    message="Dự án chưa có câu phụ đề nào để dịch.",
+                )
+            )
+            return []
+
+        await db.update_project_status(req.project_id, status=JobStatus.RUNNING, progress=1.0)
+        await emit(
+            WebSocketEvent(
+                event="job_started",
+                project_id=req.project_id,
+                job_id=job_id,
+                progress=1.0,
+                message=f"Bắt đầu dịch và xử lý AI ({len(segments)} dòng phụ đề)...",
+            )
+        )
+
         # Optimal batch size 60 for low latency and high context coherence
         batch_size = max(10, int(req.batch_size or 60))
         total = len(segments)
@@ -139,13 +164,23 @@ async def run_llm_postprocess_pipeline(
                 if cancel_ev.is_set():
                     return
 
-                raw_results = await asyncio.to_thread(
-                    _call_gemini_batch_postprocess,
-                    batch,
-                    req.fix_ocr_spelling,
-                    req.translate_to,
-                    api_key,
-                )
+                if req.model:
+                    raw_results = await asyncio.to_thread(
+                        _call_gemini_batch_postprocess,
+                        batch,
+                        req.fix_ocr_spelling,
+                        req.translate_to,
+                        api_key,
+                        preferred_model=req.model,
+                    )
+                else:
+                    raw_results = await asyncio.to_thread(
+                        _call_gemini_batch_postprocess,
+                        batch,
+                        req.fix_ocr_spelling,
+                        req.translate_to,
+                        api_key,
+                    )
 
                 # Build lookups by 'id' and by integer index 'i'
                 by_id: dict[str, dict] = {}

@@ -185,19 +185,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   };
 
   return (
-    <div className="modal modal-open">
-      <div className="modal-box max-w-2xl p-0 overflow-hidden bg-base-100 shadow-xl border border-base-300">
+    <div className="modal modal-open bg-blue_slate-100/70 backdrop-blur-xs">
+      <div className="modal-box max-w-2xl p-0 overflow-hidden bg-base-200 border border-blue_slate-500/30 rounded-2xl shadow-2xl">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-base-200 bg-base-200/50">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 bg-primary/10 text-primary rounded-lg">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-blue_slate-500/20 bg-base-300/80">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-glaucous-500/15 text-glaucous-600 dark:text-pale_sky-400 rounded-xl border border-blue_slate-500/30 shadow-xs">
               <Download className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-base-content">
+              <h3 className="text-base font-bold text-base-content tracking-tight">
                 Xuất Tệp Phụ Đề
               </h3>
-              <p className="text-xs text-base-content/60">
+              <p className="text-xs text-blue_slate-600 dark:text-blue_slate-800 mt-0.5">
                 {project?.name || 'Dự án'} • {project?.segments?.length || 0} câu phụ đề
               </p>
             </div>
@@ -206,7 +206,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="btn btn-ghost btn-xs btn-square"
+            className="btn btn-ghost btn-xs btn-square text-base-content/70 hover:text-base-content rounded-lg"
           >
             <X className="w-4 h-4" />
           </button>
@@ -216,22 +216,22 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         <div className="p-6 overflow-y-auto space-y-5 text-xs max-h-[70vh]">
           {/* Format Selection Cards */}
           <div>
-            <label className="block text-xs font-bold text-base-content mb-2">
+            <label className="block text-xs font-bold text-base-content mb-2 tracking-tight">
               1. Chọn định dạng tệp xuất
             </label>
             <div className="grid grid-cols-3 gap-3">
               {/* SRT */}
               <div
                 onClick={() => setFormat('srt')}
-                className={`card card-bordered p-3 cursor-pointer transition-all ${
+                className={`card card-bordered p-3.5 cursor-pointer rounded-xl transition-smooth ${
                   format === 'srt'
-                    ? 'border-primary bg-primary/5 ring-2 ring-primary/30'
-                    : 'border-base-200 hover:border-base-300 hover:bg-base-200/40'
+                    ? 'border-glaucous-500 bg-glaucous-500/10 ring-1 ring-glaucous-400/50 shadow-sm'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:border-glaucous-500/40 hover:bg-base-100'
                 }`}
               >
                 <div className="flex items-center justify-between w-full mb-1">
-                  <span className="font-bold text-sm text-base-content">.SRT</span>
-                  <FileCode className={`w-4 h-4 ${format === 'srt' ? 'text-primary' : 'text-base-content/40'}`} />
+                  <span className="font-bold text-sm text-base-content font-mono">.SRT</span>
+                  <FileCode className={`w-4 h-4 ${format === 'srt' ? 'text-glaucous-600 dark:text-pale_sky-400' : 'text-base-content/40'}`} />
                 </div>
                 <p className="text-[11px] text-base-content/60 leading-tight">
                   Chuẩn SubRip cho Premiere, VLC, CapCut
@@ -241,15 +241,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               {/* VTT */}
               <div
                 onClick={() => setFormat('vtt')}
-                className={`card card-bordered p-3 cursor-pointer transition-all ${
+                className={`card card-bordered p-3.5 cursor-pointer rounded-xl transition-smooth ${
                   format === 'vtt'
-                    ? 'border-primary bg-primary/5 ring-2 ring-primary/30'
-                    : 'border-base-200 hover:border-base-300 hover:bg-base-200/40'
+                    ? 'border-glaucous-500 bg-glaucous-500/10 ring-1 ring-glaucous-400/50 shadow-sm'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:border-glaucous-500/40 hover:bg-base-100'
                 }`}
               >
                 <div className="flex items-center justify-between w-full mb-1">
-                  <span className="font-bold text-sm text-base-content">.VTT</span>
-                  <FileCode className={`w-4 h-4 ${format === 'vtt' ? 'text-primary' : 'text-base-content/40'}`} />
+                  <span className="font-bold text-sm text-base-content font-mono">.VTT</span>
+                  <FileCode className={`w-4 h-4 ${format === 'vtt' ? 'text-glaucous-600 dark:text-pale_sky-400' : 'text-base-content/40'}`} />
                 </div>
                 <p className="text-[11px] text-base-content/60 leading-tight">
                   Chuẩn WebVTT cho trình phát Web HTML5
@@ -259,15 +259,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               {/* TXT */}
               <div
                 onClick={() => setFormat('txt')}
-                className={`card card-bordered p-3 cursor-pointer transition-all ${
+                className={`card card-bordered p-3.5 cursor-pointer rounded-xl transition-smooth ${
                   format === 'txt'
-                    ? 'border-primary bg-primary/5 ring-2 ring-primary/30'
-                    : 'border-base-200 hover:border-base-300 hover:bg-base-200/40'
+                    ? 'border-glaucous-500 bg-glaucous-500/10 ring-1 ring-glaucous-400/50 shadow-sm'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:border-glaucous-500/40 hover:bg-base-100'
                 }`}
               >
                 <div className="flex items-center justify-between w-full mb-1">
-                  <span className="font-bold text-sm text-base-content">.TXT</span>
-                  <FileText className={`w-4 h-4 ${format === 'txt' ? 'text-primary' : 'text-base-content/40'}`} />
+                  <span className="font-bold text-sm text-base-content font-mono">.TXT</span>
+                  <FileText className={`w-4 h-4 ${format === 'txt' ? 'text-glaucous-600 dark:text-pale_sky-400' : 'text-base-content/40'}`} />
                 </div>
                 <p className="text-[11px] text-base-content/60 leading-tight">
                   Văn bản thuần làm kịch bản hoặc tóm tắt
@@ -279,7 +279,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           {/* Bilingual Layout Options */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-bold text-base-content flex items-center gap-1.5">
+              <label className="text-xs font-bold text-base-content flex items-center gap-1.5 tracking-tight">
                 <Languages className="w-4 h-4 text-primary" />
                 2. Bố cục Phụ đề Song ngữ
               </label>
@@ -293,10 +293,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               <label
-                className={`card card-bordered p-2.5 cursor-pointer flex-row items-start gap-2.5 transition-colors ${
+                className={`card card-bordered p-3 cursor-pointer flex-row items-start gap-2.5 rounded-xl transition-smooth ${
                   bilingualLayout === 'none'
-                    ? 'border-primary bg-primary/5'
-                    : 'border-base-200 hover:bg-base-200/40'
+                    ? 'border-glaucous-500 bg-glaucous-500/10'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:bg-base-100'
                 }`}
               >
                 <input
@@ -313,10 +313,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </label>
 
               <label
-                className={`card card-bordered p-2.5 cursor-pointer flex-row items-start gap-2.5 transition-colors ${
+                className={`card card-bordered p-3 cursor-pointer flex-row items-start gap-2.5 rounded-xl transition-smooth ${
                   bilingualLayout === 'original_top'
-                    ? 'border-primary bg-primary/5'
-                    : 'border-base-200 hover:bg-base-200/40'
+                    ? 'border-glaucous-500 bg-glaucous-500/10'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:bg-base-100'
                 }`}
               >
                 <input
@@ -333,10 +333,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </label>
 
               <label
-                className={`card card-bordered p-2.5 cursor-pointer flex-row items-start gap-2.5 transition-colors ${
+                className={`card card-bordered p-3 cursor-pointer flex-row items-start gap-2.5 rounded-xl transition-smooth ${
                   bilingualLayout === 'translated_top'
-                    ? 'border-primary bg-primary/5'
-                    : 'border-base-200 hover:bg-base-200/40'
+                    ? 'border-glaucous-500 bg-glaucous-500/10'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:bg-base-100'
                 }`}
               >
                 <input
@@ -353,10 +353,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </label>
 
               <label
-                className={`card card-bordered p-2.5 cursor-pointer flex-row items-start gap-2.5 transition-colors ${
+                className={`card card-bordered p-3 cursor-pointer flex-row items-start gap-2.5 rounded-xl transition-smooth ${
                   bilingualLayout === 'translated_only'
-                    ? 'border-primary bg-primary/5'
-                    : 'border-base-200 hover:bg-base-200/40'
+                    ? 'border-glaucous-500 bg-glaucous-500/10'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:bg-base-100'
                 }`}
               >
                 <input
@@ -376,16 +376,16 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
           {/* TXT Format Extra Checkbox */}
           {format === 'txt' && (
-            <div className="flex items-center gap-2 p-2.5 bg-base-200/50 rounded-lg border border-base-200">
+            <div className="flex items-center gap-2.5 p-3 bg-base-100 rounded-xl border border-blue_slate-500/25">
               <input
                 type="checkbox"
                 id="txt-timestamps"
                 checked={includeTimestampsInTxt}
                 onChange={(e) => setIncludeTimestampsInTxt(e.target.checked)}
-                className="checkbox checkbox-primary checkbox-xs"
+                className="checkbox checkbox-primary checkbox-xs rounded"
               />
-              <label htmlFor="txt-timestamps" className="text-xs text-base-content/80 select-none cursor-pointer">
-                Đính kèm mốc thời gian <span className="font-mono text-base-content/60">[00:00:01.000 --&gt; 00:00:04.000]</span> ở đầu mỗi câu
+              <label htmlFor="txt-timestamps" className="text-xs text-base-content/85 select-none cursor-pointer">
+                Đính kèm mốc thời gian <span className="font-mono text-glaucous-600 dark:text-pale_sky-400">[00:00:01.000 --&gt; 00:00:04.000]</span> ở đầu mỗi câu
               </label>
             </div>
           )}
@@ -393,13 +393,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           {/* Live Preview Box */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-bold text-base-content">
+              <label className="text-xs font-bold text-base-content tracking-tight">
                 3. Xem trước nội dung ({format.toUpperCase()})
               </label>
               <button
                 type="button"
                 onClick={handleCopy}
-                className="btn btn-ghost btn-xs gap-1 text-[11px]"
+                className="btn btn-ghost btn-xs gap-1 text-[11px] text-base-content/75 hover:text-base-content rounded-md"
               >
                 {copied ? (
                   <Check className="w-3.5 h-3.5 text-success" />
@@ -410,14 +410,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </button>
             </div>
 
-            <div className="bg-ash-grey-950 text-ash-grey-100 rounded-xl p-3.5 font-mono text-[11px] leading-relaxed max-h-40 overflow-y-auto border border-ash-grey-800 whitespace-pre shadow-inner">
+            <div className="bg-blue_slate-100 text-ghost_white-DEFAULT rounded-xl p-3.5 font-mono text-[11px] leading-relaxed max-h-40 overflow-y-auto border border-blue_slate-500/30 whitespace-pre shadow-inner">
               {previewText}
             </div>
           </div>
 
           {/* Error Message */}
           {errorMsg && (
-            <div className="alert alert-error text-xs py-2">
+            <div className="alert alert-error text-xs py-2 rounded-xl">
               <AlertCircle className="w-4 h-4 shrink-0" />
               <span>{errorMsg}</span>
             </div>
@@ -425,12 +425,12 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="modal-action px-6 py-4 m-0 border-t border-base-200 bg-base-200/40 gap-2">
+        <div className="modal-action px-6 py-4 m-0 border-t border-blue_slate-500/20 bg-base-300/60 gap-2">
           <button
             type="button"
             onClick={onClose}
             disabled={isExporting}
-            className="btn btn-sm btn-ghost"
+            className="btn btn-sm btn-ghost rounded-lg font-medium"
           >
             Đóng
           </button>
@@ -439,7 +439,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             type="button"
             onClick={handleDownload}
             disabled={isExporting || !project || !project.segments || project.segments.length === 0}
-            className="btn btn-sm btn-primary gap-1.5"
+            className="btn btn-sm btn-primary gap-1.5 rounded-lg font-semibold shadow-md cursor-pointer disabled:cursor-not-allowed"
           >
             {isExporting ? (
               <>
@@ -455,7 +455,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </button>
         </div>
       </div>
-      <div className="modal-backdrop" onClick={onClose} />
+      <div className="modal-backdrop bg-blue_slate-100/50" onClick={onClose} />
     </div>
   );
 };

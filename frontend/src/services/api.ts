@@ -490,10 +490,13 @@ export class JobWebSocketClient {
   private listeners: Map<string, Set<WebSocketEventHandler>> = new Map();
   private anyListeners: Set<WebSocketEventHandler> = new Set();
 
-  constructor(projectId: string, customWsUrl?: string) {
+  constructor(projectId: string, customWsUrl?: string, autoConnect: boolean = true) {
     this.projectId = projectId;
     const base = customWsUrl || WS_BASE_URL;
     this.wsUrl = `${base.replace(/\/$/, '')}/api/jobs/ws/${projectId}`;
+    if (autoConnect) {
+      this.connect();
+    }
   }
 
   /**

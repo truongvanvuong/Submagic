@@ -6,30 +6,58 @@ export default {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['"Plus Jakarta Sans"', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+      },
       colors: {
-        'light-bronze': {
-          50: '#f8f1ed', 100: '#f0e2db', 200: '#e2c5b6', 300: '#d3a992', 400: '#c58c6d',
-          500: '#b66f49', 600: '#92593a', 700: '#6d432c', 800: '#492c1d', 900: '#24160f', 950: '#1a100a'
+        blue_slate: {
+          DEFAULT: '#495867',
+          100: '#0f1215',
+          200: '#1e242a',
+          300: '#2c363f',
+          400: '#3b4754',
+          500: '#495867',
+          600: '#667a8f',
+          700: '#8b9cac',
+          800: '#b1bdc8',
+          900: '#d8dee3',
         },
-        'desert-sand': {
-          50: '#f8f1ed', 100: '#f0e3db', 200: '#e2c8b6', 300: '#d3ac92', 400: '#c5906d',
-          500: '#b67549', 600: '#925d3a', 700: '#6d462c', 800: '#492f1d', 900: '#24170f', 950: '#1a100a'
+        glaucous: {
+          DEFAULT: '#577399',
+          100: '#11171e',
+          200: '#232e3d',
+          300: '#34455b',
+          400: '#465c7a',
+          500: '#577399',
+          600: '#768eb0',
+          700: '#98aac4',
+          800: '#bac7d8',
+          900: '#dde3eb',
         },
-        'powder-petal': {
-          50: '#fff1e5', 100: '#ffe2cc', 200: '#ffc599', 300: '#ffa866', 400: '#ff8b33',
-          500: '#ff6e00', 600: '#cc5800', 700: '#994200', 800: '#662c00', 900: '#331600', 950: '#240f00'
+        pale_sky: {
+          DEFAULT: '#bdd5ea',
+          100: '#142c40',
+          200: '#295881',
+          300: '#3d83c1',
+          400: '#7dacd6',
+          500: '#bdd5ea',
+          600: '#cadeee',
+          700: '#d7e6f3',
+          800: '#e5eef7',
+          900: '#f2f7fb',
         },
-        'ash-grey': {
-          50: '#f4f4f1', 100: '#e9e9e2', 200: '#d2d2c6', 300: '#bcbca9', 400: '#a5a58d',
-          500: '#8f8f70', 600: '#72725a', 700: '#565643', 800: '#39392d', 900: '#1d1d16', 950: '#141410'
-        },
-        'dry-sage': {
-          50: '#f4f4f1', 100: '#e9e9e2', 200: '#d2d2c6', 300: '#bcbca9', 400: '#a5a58d',
-          500: '#8f8f70', 600: '#72725a', 700: '#565643', 800: '#39392d', 900: '#1d1d16', 950: '#141410'
-        },
-        'dusty-olive': {
-          50: '#f3f4f1', 100: '#e7e8e3', 200: '#cfd1c7', 300: '#b6baab', 400: '#9ea38f',
-          500: '#868c73', 600: '#6b705c', 700: '#505445', 800: '#36382e', 900: '#1b1c17', 950: '#131410'
+        ghost_white: {
+          DEFAULT: '#f7f7ff',
+          100: '#000064',
+          200: '#0000c8',
+          300: '#2d2dff',
+          400: '#9191ff',
+          500: '#f7f7ff',
+          600: '#f7f7ff',
+          700: '#f9f9ff',
+          800: '#fbfbff',
+          900: '#fdfdff',
         },
       },
     },
@@ -40,53 +68,98 @@ export default {
   daisyui: {
     themes: [
       {
-        bronze: {
-          "primary": "#92593a",
-          "primary-content": "#f8f1ed",
-          "secondary": "#505445",
-          "secondary-content": "#f3f4f1",
-          "accent": "#ff6e00",
-          "accent-content": "#240f00",
-          "neutral": "#39392d",
-          "neutral-content": "#e9e9e2",
-          "base-100": "#f4f4f1",
-          "base-200": "#e9e9e2",
-          "base-300": "#d2d2c6",
-          "base-content": "#1d1d16",
-          "info": "#6b705c",
-          "info-content": "#f3f4f1",
-          "success": "#565643",
-          "success-content": "#f4f4f1",
-          "warning": "#ff8b33",
-          "warning-content": "#240f00",
-          "error": "#b3412e",
-          "error-content": "#ffffff",
+        'studio-dark': {
+          "primary": "#577399",         // glaucous DEFAULT
+          "primary-content": "#f7f7ff", // ghost_white DEFAULT
+          "secondary": "#7dacd6",       // pale_sky 400
+          "secondary-content": "#0f1215",
+          "accent": "#bdd5ea",          // pale_sky DEFAULT
+          "accent-content": "#0f1215",
+          "neutral": "#1e242a",         // blue_slate 200
+          "neutral-content": "#f7f7ff", // ghost_white DEFAULT
+          "base-100": "#0f1215",        // blue_slate 100 (deep dark slate background)
+          "base-200": "#1e242a",        // blue_slate 200 (panel background)
+          "base-300": "#2c363f",        // blue_slate 300 (cards, inputs)
+          "base-content": "#f7f7ff",    // ghost_white DEFAULT (high legibility text)
+          "info": "#768eb0",            // glaucous 600
+          "info-content": "#f7f7ff",
+          "success": "#52c41a",
+          "success-content": "#f7f7ff",
+          "warning": "#faad14",
+          "warning-content": "#0f1215",
+          "error": "#ff4d4f",
+          "error-content": "#f7f7ff",
         },
-        "bronze-dark": {
-          "primary": "#c58c6d",
-          "primary-content": "#1a100a",
-          "secondary": "#9ea38f",
-          "secondary-content": "#131410",
-          "accent": "#ff6e00",
-          "accent-content": "#240f00",
-          "neutral": "#d2d2c6",
-          "neutral-content": "#1d1d16",
-          "base-100": "#1d1d16",
-          "base-200": "#141410",
-          "base-300": "#39392d",
-          "base-content": "#e9e9e2",
-          "info": "#b6baab",
-          "info-content": "#131410",
-          "success": "#a5a58d",
-          "success-content": "#141410",
-          "warning": "#ff8b33",
-          "warning-content": "#240f00",
-          "error": "#e05238",
-          "error-content": "#ffffff",
+        'cool-sky': {
+          "primary": "#577399",         // glaucous DEFAULT
+          "primary-content": "#f7f7ff",
+          "secondary": "#3d83c1",       // pale_sky 300
+          "secondary-content": "#f7f7ff",
+          "accent": "#295881",          // pale_sky 200
+          "accent-content": "#f7f7ff",
+          "neutral": "#2c363f",         // blue_slate 300
+          "neutral-content": "#f7f7ff",
+          "base-100": "#f7f7ff",        // ghost_white DEFAULT (clean crisp light)
+          "base-200": "#f2f7fb",        // pale_sky 900
+          "base-300": "#d8dee3",        // blue_slate 900
+          "base-content": "#0f1215",    // blue_slate 100
+          "info": "#577399",
+          "info-content": "#f7f7ff",
+          "success": "#389e0d",
+          "success-content": "#f7f7ff",
+          "warning": "#d48806",
+          "warning-content": "#0f1215",
+          "error": "#cf1322",
+          "error-content": "#f7f7ff",
+        },
+        // Backward compatibility theme aliases
+        'warm-linen': {
+          "primary": "#577399",
+          "primary-content": "#f7f7ff",
+          "secondary": "#3d83c1",
+          "secondary-content": "#f7f7ff",
+          "accent": "#295881",
+          "accent-content": "#f7f7ff",
+          "neutral": "#2c363f",
+          "neutral-content": "#f7f7ff",
+          "base-100": "#f7f7ff",
+          "base-200": "#f2f7fb",
+          "base-300": "#d8dee3",
+          "base-content": "#0f1215",
+          "info": "#577399",
+          "info-content": "#f7f7ff",
+          "success": "#389e0d",
+          "success-content": "#f7f7ff",
+          "warning": "#d48806",
+          "warning-content": "#0f1215",
+          "error": "#cf1322",
+          "error-content": "#f7f7ff",
+        },
+        'warm-parchment': {
+          "primary": "#577399",
+          "primary-content": "#f7f7ff",
+          "secondary": "#3d83c1",
+          "secondary-content": "#f7f7ff",
+          "accent": "#295881",
+          "accent-content": "#f7f7ff",
+          "neutral": "#2c363f",
+          "neutral-content": "#f7f7ff",
+          "base-100": "#f7f7ff",
+          "base-200": "#f2f7fb",
+          "base-300": "#d8dee3",
+          "base-content": "#0f1215",
+          "info": "#577399",
+          "info-content": "#f7f7ff",
+          "success": "#389e0d",
+          "success-content": "#f7f7ff",
+          "warning": "#d48806",
+          "warning-content": "#0f1215",
+          "error": "#cf1322",
+          "error-content": "#f7f7ff",
         },
       },
     ],
-    darkTheme: "bronze-dark",
+    darkTheme: "studio-dark",
     base: true,
     styled: true,
     utils: true,

@@ -161,7 +161,7 @@ class OCRJobRequest(BaseModel):
     stability_frames: int = Field(default=1, ge=0, le=5)
     visual_diff_threshold: float = Field(default=0.14, ge=0.01, le=0.90)
     fuzzy_match_threshold: float = Field(default=85.0, ge=50.0, le=100.0)
-    max_merge_gap_sec: float = Field(default=0.40, ge=0.0, le=2.0)
+    max_merge_gap_sec: float = Field(default=0.20, ge=0.0, le=2.0)
     save_crop_images: bool = True
     gemini_api_key: str | None = None
 
@@ -175,6 +175,10 @@ class LLMJobRequest(BaseModel):
     )
     batch_size: int = Field(default=60, ge=1, le=100)
     gemini_api_key: str | None = None
+    model: str | None = Field(
+        default=None,
+        description="Optional Gemini model override (e.g., 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash')",
+    )
 
 
 

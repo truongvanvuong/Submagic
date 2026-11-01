@@ -40,17 +40,27 @@ class JobStreamManager:
 
     def disconnect(self, project_id: str, websocket: WebSocket) -> None:
         self._connections[project_id].discard(websocket)
+        if not self._connections[project_id]:
+            self._connections.pop(project_id, None)
 
     async def broadcast(self, event: WebSocketEvent) -> None:
-        dead: list[WebSocket] = []
+        targets = list(self._connections.get(event.project_id, set()))
+        if not targets:
+            return
+
         payload = event.model_dump(mode="json")
-        for ws in list(self._connections.get(event.project_id, set())):
+
+        async def _safe_send(ws: WebSocket) -> WebSocket | None:
             try:
                 await ws.send_json(payload)
+                return None
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.disconnect(event.project_id, ws)
+                return ws
+
+        results = await asyncio.gather(*[_safe_send(ws) for ws in targets], return_exceptions=True)
+        for res in results:
+            if isinstance(res, WebSocket):
+                self.disconnect(event.project_id, res)
 
     def is_running(self, project_id: str) -> bool:
         task = self._tasks.get(project_id)
@@ -81,6 +91,19 @@ async def project_job_websocket(websocket: WebSocket, project_id: str) -> None:
     """Real-time WebSocket stream for job progress and subtitle segments."""
     await stream_manager.connect(project_id, websocket)
     try:
+        # Send current job status immediately upon connection so frontend doesn't need to poll
+        project = await db.get_project(project_id)
+        if project:
+            await websocket.send_json(
+                {
+                    "event": "job_status",
+                    "project_id": project_id,
+                    "status": project.status,
+                    "progress": project.progress,
+                    "segment_count": len(project.segments or []),
+                }
+            )
+
         while True:
             msg = await websocket.receive_text()
             if msg.strip().lower() == "ping":
@@ -193,6 +216,18 @@ async def start_llm_job(req: LLMJobRequest) -> dict:
             )
         except Exception as exc:
             logger.error("Background LLM job %s failed: %s", job_id, exc)
+            try:
+                await db.update_project_status(req.project_id, status=JobStatus.FAILED)
+                await stream_manager.broadcast(
+                    WebSocketEvent(
+                        event="job_failed",
+                        project_id=req.project_id,
+                        job_id=job_id,
+                        message=f"Lỗi AI hậu kỳ: {exc}",
+                    )
+                )
+            except Exception:
+                pass
 
     task = asyncio.create_task(_runner())
     stream_manager.register_job(req.project_id, task, cancel_ev)

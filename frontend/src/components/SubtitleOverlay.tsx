@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { Move } from 'lucide-react';
 import type { SubtitleSegment, SubtitleOverlaySettings } from '../types/subtitle';
 
 export interface SubtitleOverlayProps {
@@ -11,6 +12,7 @@ export interface SubtitleOverlayProps {
     height: number;
   };
   settings: SubtitleOverlaySettings;
+  onPositionChange?: (pos: { x: number; y: number }) => void;
 }
 
 /**
@@ -18,18 +20,12 @@ export interface SubtitleOverlayProps {
  */
 export function isRTLText(text: string): boolean {
   if (!text) return false;
-  // Unicode ranges for Hebrew, Arabic, Syriac, Thaana, Samaritan, Mandaic, Arabic Extended
   const rtlRegex = /[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]/;
   return rtlRegex.test(text);
 }
 
 /**
  * O(log N) Binary search algorithm to find active subtitle segments at `time`.
- * Supports multiple overlapping subtitle lines and variable segment durations.
- *
- * @param sortedSegments Subtitle segments sorted ascending by start_time
- * @param time Current playback time in seconds
- * @returns Array of currently active SubtitleSegments
  */
 export function findActiveSegments(
   sortedSegments: SubtitleSegment[],
@@ -39,8 +35,6 @@ export function findActiveSegments(
     return [];
   }
 
-  // Binary search for bisect_right on start_time:
-  // Find highest index where sortedSegments[index].start_time <= time
   let low = 0;
   let high = sortedSegments.length - 1;
   let targetIndex = -1;
@@ -49,7 +43,7 @@ export function findActiveSegments(
     const mid = (low + high) >> 1;
     if (sortedSegments[mid].start_time <= time) {
       targetIndex = mid;
-      low = mid + 1; // Seek later potential candidates
+      low = mid + 1;
     } else {
       high = mid - 1;
     }
@@ -60,8 +54,6 @@ export function findActiveSegments(
   }
 
   const active: SubtitleSegment[] = [];
-  // Scan backwards from targetIndex to collect all segments where end_time >= time.
-  // Maximum lookback window of 30 seconds covers long speech lines while keeping O(K) bounded.
   const MAX_LOOKBACK_SECONDS = 30;
 
   for (let i = targetIndex; i >= 0; i--) {
@@ -70,7 +62,7 @@ export function findActiveSegments(
       break;
     }
     if (time >= seg.start_time && time <= seg.end_time) {
-      active.unshift(seg); // Maintain chronological order
+      active.unshift(seg);
     }
   }
 
@@ -82,15 +74,22 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
   segments,
   renderRect,
   settings,
+  onPositionChange,
 }) => {
   const [activeSegments, setActiveSegments] = useState<SubtitleSegment[]>([]);
+
+  // Dragging state for interactive positioning
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef<{ startMouseX: number; startMouseY: number; startPosX: number; startPosY: number } | null>(null);
+
+  // Default position: Center X (0.5), Bottom Y (0.88)
+  const currentPos = settings.positionOffset || { x: 0.5, y: 0.88 };
 
   // Memoize sorted segments by start_time for binary search
   const sortedSegments = useMemo(() => {
     return [...segments].sort((a, b) => a.start_time - b.start_time);
   }, [segments]);
 
-  // Keep a ref of sortedSegments for the animation frame loop to avoid recreation
   const sortedSegmentsRef = useRef<SubtitleSegment[]>(sortedSegments);
   useEffect(() => {
     sortedSegmentsRef.current = sortedSegments;
@@ -110,7 +109,6 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
       const t = video.currentTime;
       const candidates = findActiveSegments(sortedSegmentsRef.current, t);
 
-      // Only update state if active segment IDs or text have changed
       setActiveSegments((prev) => {
         if (prev.length !== candidates.length) return candidates;
         const isIdentical = prev.every((p, idx) => {
@@ -124,7 +122,6 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
         return isIdentical ? prev : candidates;
       });
 
-      // Chain next frame check if video is actively playing
       if (!video.paused && !video.ended) {
         if ('requestVideoFrameCallback' in video) {
           videoCallbackId = (video as any).requestVideoFrameCallback(
@@ -136,7 +133,6 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
       }
     };
 
-    // Event listeners for seek, pause, timeupdate, playback rate change
     const handleImmediateUpdate = () => {
       checkSubtitlesAtCurrentTime();
     };
@@ -147,7 +143,6 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
     video.addEventListener('play', handleImmediateUpdate);
     video.addEventListener('ratechange', handleImmediateUpdate);
 
-    // Initial check on mount or video change
     checkSubtitlesAtCurrentTime();
 
     return () => {
@@ -166,7 +161,52 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
     };
   }, [videoRef]);
 
-  // If subtitle overlay is disabled, or no active subtitles, or renderRect is invalid: render nothing
+  // Drag handlers to reposition subtitle box on video
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (renderRect.width <= 0 || renderRect.height <= 0) return;
+
+    setIsDragging(true);
+    dragStartRef.current = {
+      startMouseX: e.clientX,
+      startMouseY: e.clientY,
+      startPosX: currentPos.x,
+      startPosY: currentPos.y,
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!dragStartRef.current || renderRect.width <= 0 || renderRect.height <= 0) return;
+
+      const deltaPixelX = moveEvent.clientX - dragStartRef.current.startMouseX;
+      const deltaPixelY = moveEvent.clientY - dragStartRef.current.startMouseY;
+
+      const deltaNormX = deltaPixelX / renderRect.width;
+      const deltaNormY = deltaPixelY / renderRect.height;
+
+      // Clamp between 0.08 and 0.92 so box stays inside video viewport
+      const nextX = Math.max(0.08, Math.min(0.92, dragStartRef.current.startPosX + deltaNormX));
+      const nextY = Math.max(0.05, Math.min(0.95, dragStartRef.current.startPosY + deltaNormY));
+
+      if (onPositionChange) {
+        onPositionChange({
+          x: Number(nextX.toFixed(4)),
+          y: Number(nextY.toFixed(4)),
+        });
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      dragStartRef.current = null;
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  }, [renderRect, currentPos, onPositionChange]);
+
   if (
     !settings.enabled ||
     activeSegments.length === 0 ||
@@ -174,14 +214,6 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
     renderRect.height <= 0
   ) {
     return null;
-  }
-
-  // Positioning classes based on user settings
-  let positionClass = 'justify-end pb-[5%]'; // Default 'bottom'
-  if (settings.position === 'center') {
-    positionClass = 'justify-center';
-  } else if (settings.position === 'top') {
-    positionClass = 'justify-start pt-[5%]';
   }
 
   // Responsive font size styling via container query units (cqw) or relative clamps
@@ -195,20 +227,14 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
     fontSizeStyle = { fontSize: 'clamp(14px, 2.8cqw, 30px)' };
   }
 
-  // Background style & text shadow for universal legibility
-  let bgClasses = 'bg-black/65 backdrop-blur-xs rounded-lg px-3 py-1.5 shadow-lg';
-  if (settings.background === 'none') {
-    bgClasses = 'bg-transparent px-2 py-1';
-  } else if (settings.background === 'solid') {
-    bgClasses = 'bg-neutral-950/95 rounded-lg px-3.5 py-1.5 shadow-xl';
-  }
+  // Default design: Black background with white text as requested
+  const bgClasses = 'bg-black/85 backdrop-blur-xs rounded-xl px-4 py-2 shadow-2xl border border-white/15';
 
-  // High-contrast text stroke and drop shadow for crisp readability on any background
+  // High-contrast text drop shadow for crisp readability on any background
   const textShadowStyle: React.CSSProperties = {
     textShadow: `
-      0 2px 4px rgba(0, 0, 0, 0.9),
-      0 0 4px rgba(0, 0, 0, 0.9),
-      0 0 1px #000000,
+      0 2px 4px rgba(0, 0, 0, 0.95),
+      0 0 2px #000000,
       -1px -1px 0 #000,
        1px -1px 0 #000,
       -1px  1px 0 #000,
@@ -218,7 +244,7 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
 
   return (
     <div
-      className={`absolute inset-0 pointer-events-none select-none z-20 flex flex-col items-center ${positionClass}`}
+      className="absolute inset-0 pointer-events-none select-none z-20"
       style={{
         left: `${renderRect.left}px`,
         top: `${renderRect.top}px`,
@@ -227,55 +253,80 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
         containerType: 'inline-size',
       }}
     >
-      <div className="flex flex-col items-center gap-2 max-w-[92%] px-2 text-center pointer-events-none">
-        {activeSegments.map((segment) => {
-          const hasTranslation = Boolean(segment.translated_text?.trim());
-          const showOriginal =
-            settings.languageMode === 'original' ||
-            settings.languageMode === 'bilingual' ||
-            !hasTranslation;
-          const showTranslation =
-            hasTranslation &&
-            (settings.languageMode === 'translated' ||
-              settings.languageMode === 'bilingual');
+      {/* Draggable Subtitle Box Container */}
+      <div
+        onMouseDown={handleMouseDown}
+        title="Nhấp giữ và kéo để di chuyển vị trí phụ đề"
+        className={`absolute pointer-events-auto select-none transition-shadow ${
+          isDragging
+            ? 'cursor-grabbing ring-2 ring-primary ring-offset-2 ring-offset-black/50 shadow-2xl scale-[1.01]'
+            : 'cursor-grab hover:ring-1 hover:ring-white/40'
+        }`}
+        style={{
+          left: `${currentPos.x * 100}%`,
+          top: `${currentPos.y * 100}%`,
+          transform: 'translate(-50%, -50%)',
+          maxWidth: '92%',
+        }}
+      >
+        <div className="relative group/box">
+          {/* Subtle drag handle on hover */}
+          <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 opacity-0 group-hover/box:opacity-100 transition-opacity bg-black/80 text-white/80 rounded-full px-2 py-0.5 text-[9px] font-mono flex items-center gap-1 shadow pointer-events-none whitespace-nowrap">
+            <Move className="w-2.5 h-2.5" />
+            <span>Kéo để di chuyển</span>
+          </div>
 
-          const isOriginalRTL = isRTLText(segment.text);
-          const isTranslatedRTL = segment.translated_text
-            ? isRTLText(segment.translated_text)
-            : false;
+          <div className="flex flex-col items-center gap-1.5 text-center">
+            {activeSegments.map((segment) => {
+              const hasTranslation = Boolean(segment.translated_text?.trim());
+              const showOriginal =
+                settings.languageMode === 'original' ||
+                settings.languageMode === 'bilingual' ||
+                !hasTranslation;
+              const showTranslation =
+                hasTranslation &&
+                (settings.languageMode === 'translated' ||
+                  settings.languageMode === 'bilingual');
 
-          return (
-            <div
-              key={segment.id}
-              className={`${bgClasses} transition-all duration-100 flex flex-col items-center max-w-full`}
-              style={fontSizeStyle}
-            >
-              {/* Original Subtitle Line */}
-              {showOriginal && (
+              const isOriginalRTL = isRTLText(segment.text);
+              const isTranslatedRTL = segment.translated_text
+                ? isRTLText(segment.translated_text)
+                : false;
+
+              return (
                 <div
-                  dir={isOriginalRTL ? 'rtl' : 'ltr'}
-                  style={textShadowStyle}
-                  className="font-medium text-white break-words whitespace-pre-wrap leading-snug tracking-wide font-sans"
+                  key={segment.id}
+                  className={`${bgClasses} flex flex-col items-center max-w-full font-sans`}
+                  style={fontSizeStyle}
                 >
-                  {segment.text}
-                </div>
-              )}
+                  {/* Original Subtitle Line: White Text */}
+                  {showOriginal && (
+                    <div
+                      dir={isOriginalRTL ? 'rtl' : 'ltr'}
+                      style={textShadowStyle}
+                      className="font-medium text-white break-words whitespace-pre-wrap leading-snug tracking-wide"
+                    >
+                      {segment.text}
+                    </div>
+                  )}
 
-              {/* Translated Subtitle Line (Distinctive warm golden-sand tint for bilingual clarity) */}
-              {showTranslation && (
-                <div
-                  dir={isTranslatedRTL ? 'rtl' : 'ltr'}
-                  style={textShadowStyle}
-                  className={`font-semibold text-powder-petal-300 break-words whitespace-pre-wrap leading-snug tracking-wide font-sans ${
-                    showOriginal ? 'mt-0.5 text-[0.92em]' : 'text-white'
-                  }`}
-                >
-                  {segment.translated_text}
+                  {/* Translated Subtitle Line (if bilingual): Subtle separator with crisp text */}
+                  {showTranslation && (
+                    <div
+                      dir={isTranslatedRTL ? 'rtl' : 'ltr'}
+                      style={textShadowStyle}
+                      className={`font-medium text-gray-200 break-words whitespace-pre-wrap leading-snug tracking-wide ${
+                        showOriginal ? 'text-[0.92em] mt-1 pt-1 border-t border-white/20' : 'text-white'
+                      }`}
+                    >
+                      {segment.translated_text}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          );
-        })}
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );

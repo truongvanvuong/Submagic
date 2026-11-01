@@ -246,8 +246,12 @@ def crop_and_mask_roi(
     """
     h, w = frame_bgr.shape[:2]
     rx1, ry1, rx2, ry2 = roi_config.main_roi.to_pixel_rect(w, h)
-    cropped = frame_bgr[ry1:ry2, rx1:rx2].copy()
+    cropped = frame_bgr[ry1:ry2, rx1:rx2]
 
+    if not roi_config.exclusion_masks:
+        return cropped.copy()
+
+    cropped = cropped.copy()
     for mask in roi_config.exclusion_masks:
         mx1, my1, mx2, my2 = mask.to_pixel_rect(w, h)
         # Convert full-frame mask coordinates to ROI-relative coordinates
