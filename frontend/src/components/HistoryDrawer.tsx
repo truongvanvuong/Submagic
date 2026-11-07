@@ -10,10 +10,13 @@ import {
   FileText,
   CheckCircle2,
   Calendar,
+  AlertCircle,
+  Loader2,
 } from 'lucide-react';
-import type { ExtractionHistoryItem } from '../types/subtitle';
-import { getHistoryDownloadUrl } from '../services/api';
+import type { ExtractionHistoryItem, ProjectDetail } from '../types/subtitle';
+import { getProject } from '../services/api';
 import ConfirmModal from './ConfirmModal';
+import ExportModal from './ExportModal';
 
 export interface HistoryDrawerProps {
   isOpen: boolean;
@@ -22,7 +25,10 @@ export interface HistoryDrawerProps {
   onSelectProject: (projectId: string) => void;
   onDeleteHistory: (historyId: string) => void;
   onDeleteHistoryBulk?: (historyIds: string[]) => void | Promise<void>;
+  onDeleteProject?: (projectId: string) => void | Promise<void>;
+  onDeleteProjectsBulk?: (projectIds: string[]) => void | Promise<void>;
   activeProjectId?: string | null;
+  onError?: (message: string) => void;
 }
 
 function formatDate(iso: string): string {
@@ -55,11 +61,42 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
   onSelectProject,
   onDeleteHistory,
   onDeleteHistoryBulk,
+  onDeleteProject,
+  onDeleteProjectsBulk,
   activeProjectId,
+  onError,
 }) => {
-  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    historyId: string;
+    projectId: string;
+    projectName: string;
+  } | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isBulkConfirmOpen, setIsBulkConfirmOpen] = useState<boolean>(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [exportProject, setExportProject] = useState<ProjectDetail | null>(null);
+  const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
+
+  const handleOpenExportModal = async (e: React.MouseEvent, item: ExtractionHistoryItem) => {
+    e.preventDefault();
+    setDownloadError(null);
+    setDownloadingId(item.id);
+    try {
+      const proj = await getProject(item.project_id);
+      if (!proj) {
+        throw new Error('Dự án không tồn tại hoặc đã bị xóa.');
+      }
+      setExportProject(proj);
+      setIsExportModalOpen(true);
+    } catch (err: any) {
+      const msg = err.message || 'Không thể tải thông tin phụ đề của dự án này.';
+      setDownloadError(msg);
+      onError?.(msg);
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -87,7 +124,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                 <h3 className="font-bold text-base text-base-content leading-tight tracking-tight">
                   Lịch sử trích xuất
                 </h3>
-                <p className="text-xs text-blue_slate-600 dark:text-blue_slate-800 mt-0.5">
+                <p className="text-xs text-base-content/60 mt-0.5">
                   {historyList.length} lần trích xuất đã lưu
                 </p>
               </div>
@@ -133,6 +170,23 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
 
           {/* Drawer Content */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {downloadError && (
+              <div className="alert alert-error text-xs py-2 px-3 rounded-xl flex items-center justify-between shadow-sm animate-in fade-in">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{downloadError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDownloadError(null)}
+                  className="btn btn-ghost btn-xs btn-circle text-error-content hover:bg-error-content/20"
+                  title="Đóng thông báo"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {historyList.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-64 text-center p-6 text-base-content/50">
                 <div className="w-16 h-16 rounded-2xl bg-blue_slate-200/50 border border-blue_slate-500/30 flex items-center justify-center mb-3 shadow-md">
@@ -227,24 +281,33 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                             <span>{isActive ? 'Đang mở' : 'Xem lại'}</span>
                           </button>
 
-                          {item.export_srt_path && (
-                            <a
-                              href={getHistoryDownloadUrl(item.id)}
-                              download
-                              className="btn btn-xs btn-outline btn-success rounded-lg font-semibold"
-                              title="Tải phụ đề .SRT"
-                            >
+                          <button
+                            type="button"
+                            disabled={downloadingId === item.id}
+                            onClick={(e) => handleOpenExportModal(e, item)}
+                            className="btn btn-xs btn-outline btn-success rounded-lg font-semibold cursor-pointer disabled:opacity-50"
+                            title="Tùy chọn tải phụ đề (SRT, VTT, TXT...)"
+                          >
+                            {downloadingId === item.id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
                               <Download className="w-3 h-3" />
-                              <span>Tải sub</span>
-                            </a>
-                          )}
+                            )}
+                            <span>Tải sub</span>
+                          </button>
                         </div>
 
                         <button
                           type="button"
-                          onClick={() => setPendingDeleteId(item.id)}
+                          onClick={() =>
+                            setPendingDelete({
+                              historyId: item.id,
+                              projectId: item.project_id,
+                              projectName: item.project_name || 'Dự án',
+                            })
+                          }
                           className="btn btn-xs btn-ghost text-error hover:bg-error/10 rounded-lg cursor-pointer"
-                          title="Xóa khỏi lịch sử"
+                          title="Xóa dự án & tệp liên quan"
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
@@ -257,41 +320,70 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
           </div>
 
           {/* Footer */}
-          <div className="p-3.5 bg-base-300/60 border-t border-blue_slate-500/20 text-center text-xs text-blue_slate-600 dark:text-blue_slate-800">
+          <div className="p-3.5 bg-base-300/60 border-t border-blue_slate-500/20 text-center text-xs text-base-content/60">
             Dữ liệu lịch sử được lưu trữ bền vững trong cơ sở dữ liệu SQLite
           </div>
         </div>
       </div>
 
-      {/* Confirmation Modal using DaisyUI */}
+      {/* Single Project Delete Confirm Modal */}
       <ConfirmModal
-        isOpen={!!pendingDeleteId}
-        title="Xác nhận xóa bản ghi lịch sử"
-        message="Bạn có chắc chắn muốn xóa mục lịch sử này khỏi cơ sở dữ liệu? Dữ liệu này sẽ không thể khôi phục."
-        confirmLabel="Xóa lịch sử"
-        cancelLabel="Hủy"
-        onConfirm={() => {
-          if (pendingDeleteId) {
-            onDeleteHistory(pendingDeleteId);
-            setPendingDeleteId(null);
-          }
-        }}
-        onCancel={() => setPendingDeleteId(null)}
-      />
-
-      <ConfirmModal
-        isOpen={isBulkConfirmOpen}
-        title={`Xóa ${validSelected.length} mục lịch sử`}
-        message={`Bạn có chắc chắn muốn xóa ${validSelected.length} mục đã chọn khỏi cơ sở dữ liệu? Dữ liệu này sẽ không thể khôi phục.`}
-        confirmLabel={`Xóa ${validSelected.length} mục`}
+        isOpen={!!pendingDelete}
+        title="Xác nhận xóa dự án"
+        message={`Bạn có chắc chắn muốn xóa dự án "${pendingDelete?.projectName}"? Toàn bộ video, ảnh trích xuất, phụ đề và dữ liệu liên quan trên đĩa sẽ bị xóa sạch và không thể hoàn tác.`}
+        confirmLabel="Xóa vĩnh viễn"
         cancelLabel="Hủy"
         onConfirm={async () => {
-          const ids = validSelected;
+          if (pendingDelete) {
+            const { projectId, historyId } = pendingDelete;
+            setPendingDelete(null);
+            if (onDeleteProject) {
+              await onDeleteProject(projectId);
+            } else {
+              onDeleteHistory(historyId);
+            }
+          }
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
+
+      {/* Bulk Delete Confirm Modal */}
+      <ConfirmModal
+        isOpen={isBulkConfirmOpen}
+        title={`Xóa ${validSelected.length} dự án đã chọn`}
+        message={`Bạn có chắc chắn muốn xóa ${validSelected.length} dự án đã chọn? Toàn bộ video, ảnh trích xuất, phụ đề và dữ liệu trên đĩa của các dự án này sẽ bị xóa vĩnh viễn và không thể hoàn tác.`}
+        confirmLabel={`Xóa vĩnh viễn ${validSelected.length} dự án`}
+        cancelLabel="Hủy"
+        onConfirm={async () => {
+          const ids = [...validSelected];
           setIsBulkConfirmOpen(false);
           setSelectedIds([]);
-          await onDeleteHistoryBulk?.(ids);
+          if (onDeleteProjectsBulk) {
+            // Map selected history ids to unique project_ids to avoid duplicate deletion calls
+            const uniqueProjectIds = Array.from(
+              new Set(
+                historyList
+                  .filter((h) => ids.includes(h.id))
+                  .map((h) => h.project_id)
+                  .filter(Boolean)
+              )
+            );
+            await onDeleteProjectsBulk(uniqueProjectIds);
+          } else if (onDeleteHistoryBulk) {
+            await onDeleteHistoryBulk(ids);
+          }
         }}
         onCancel={() => setIsBulkConfirmOpen(false)}
+      />
+
+      {/* Export Subtitles Modal Dialog reused for History item */}
+      <ExportModal
+        isOpen={isExportModalOpen}
+        onClose={() => {
+          setIsExportModalOpen(false);
+          setExportProject(null);
+        }}
+        project={exportProject}
       />
     </div>
   );

@@ -7,9 +7,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.api import export, history_api, jobs, models_api, projects
 from app.config import ensure_directories, settings
 from app.database import db
+from app.routers import export, history_api, jobs, models_api, projects
 
 
 @asynccontextmanager

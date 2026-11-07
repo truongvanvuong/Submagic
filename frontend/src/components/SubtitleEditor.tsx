@@ -19,6 +19,7 @@ import {
 import type {
   SubtitleSegment,
   SubtitleSegmentUpdate,
+  TranslationContext,
 } from '../types/subtitle';
 import { TRANSLATE_TARGET_LANGUAGES } from '../constants/languages';
 import ConfirmModal from './ConfirmModal';
@@ -40,7 +41,7 @@ export interface SubtitleEditorProps {
   ) => Promise<void> | void;
   onAddSegment: (atTime: number) => Promise<void> | void;
   onAIPolish?: () => void;
-  onTranslate?: (targetLang: string) => void;
+  onTranslate?: (targetLang: string, context: TranslationContext) => void;
   isProcessing?: boolean;
   className?: string;
 }
@@ -351,6 +352,7 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
           <textarea
             rows={2}
             value={localText}
+            onClick={(e) => e.stopPropagation()}
             onChange={handleTextChange}
             onBlur={handleBlurText}
             placeholder="Nhập nội dung phụ đề gốc..."
@@ -358,11 +360,12 @@ const SegmentRow: React.FC<SegmentRowProps> = ({
           />
 
           {/* Translated Text Input */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
             <Languages className="w-3.5 h-3.5 text-glaucous-600 dark:text-pale_sky-400 flex-shrink-0" />
             <input
               type="text"
               value={localTranslated}
+              onClick={(e) => e.stopPropagation()}
               onChange={handleTranslatedChange}
               onBlur={handleBlurTranslated}
               placeholder="Bản dịch phụ đề (tùy chọn)..."
@@ -398,9 +401,12 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
   const [lowConfidenceOnly, setLowConfidenceOnly] = useState<boolean>(false);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
 
-  // Translate target language (persisted in localStorage)
+  // Translate target language & context (persisted in localStorage)
   const [translateTarget, setTranslateTarget] = useState<string>(() => {
     return localStorage.getItem('submagic_translate_target_lang') || 'vi';
+  });
+  const [translationContext, setTranslationContext] = useState<TranslationContext>(() => {
+    return (localStorage.getItem('submagic_translation_context') as TranslationContext) || 'casual';
   });
 
   // Enlarged Crop Modal state
@@ -421,9 +427,15 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
     localStorage.setItem('submagic_translate_target_lang', lang);
   };
 
+  const handleTranslationContextChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const ctx = e.target.value as TranslationContext;
+    setTranslationContext(ctx);
+    localStorage.setItem('submagic_translation_context', ctx);
+  };
+
   const handleTriggerTranslate = () => {
     if (!onTranslate) return;
-    onTranslate(translateTarget);
+    onTranslate(translateTarget, translationContext);
   };
 
   // Identify currently active segments (supports overlapping segments)
@@ -531,6 +543,11 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
     }
   };
 
+  const handleSeekFromSegment = (time: number) => {
+    setIsUserScrolling(false);
+    onSeek(time);
+  };
+
   return (
     <div
       className={`flex flex-col bg-base-200 rounded-xl border border-blue_slate-500/25 shadow-lg overflow-hidden h-full transition-smooth ${className}`}
@@ -560,14 +577,25 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
             </button>
           )}
 
-          {/* AI Translate Dropdown + Button */}
+          {/* AI Translate Dropdown + Context + Button */}
           {onTranslate && (
-            <div className="join border border-blue_slate-500/30 rounded-lg overflow-hidden">
+            <div className="join border border-blue_slate-500/30 rounded-lg overflow-hidden shadow-xs">
+              <select
+                value={translationContext}
+                onChange={handleTranslationContextChange}
+                disabled={isProcessing || segments.length === 0}
+                className="select select-bordered select-xs join-item bg-base-100 border-none text-xs cursor-pointer max-w-[115px]"
+                title="Ngữ cảnh dịch: Đời thường (Mặc định), Cổ trang, Hiện đại"
+              >
+                <option value="casual">🌿 Đời thường</option>
+                <option value="historical">⚔️ Cổ trang</option>
+                <option value="modern">🏢 Hiện đại</option>
+              </select>
               <select
                 value={translateTarget}
                 onChange={handleTranslateTargetChange}
                 disabled={isProcessing || segments.length === 0}
-                className="select select-bordered select-xs join-item bg-base-100 border-none text-xs max-w-[130px] cursor-pointer"
+                className="select select-bordered select-xs join-item bg-base-100 border-none text-xs max-w-[125px] cursor-pointer"
                 title="Chọn ngôn ngữ cần dịch sang"
               >
                 {TRANSLATE_TARGET_LANGUAGES.map((lang) => (
@@ -580,7 +608,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
                 type="button"
                 onClick={handleTriggerTranslate}
                 disabled={isProcessing || segments.length === 0}
-                title="Bắt đầu dịch phụ đề sang ngôn ngữ đã chọn"
+                title={`Bắt đầu dịch phụ đề sang ${translateTarget} (${translationContext})`}
                 className="btn btn-xs bg-glaucous-600 hover:bg-glaucous-700 text-ghost_white-DEFAULT join-item gap-1 border-none cursor-pointer"
               >
                 <Languages className="w-3.5 h-3.5" />
@@ -701,7 +729,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
                   index={originalIndex >= 0 ? originalIndex : idx}
                   isActive={isActive}
                   canMergeNext={canMergeNext}
-                  onSeek={onSeek}
+                  onSeek={handleSeekFromSegment}
                   onUpdate={onUpdateSegment}
                   onDelete={(id) => setPendingDeleteSegmentId(id)}
                   onMergeWithNext={handleMergeWithNext}
@@ -756,7 +784,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
               </div>
 
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-between text-xs text-blue_slate-600 dark:text-blue_slate-800 font-mono">
+                <div className="flex items-center justify-between text-xs text-base-content/60 font-mono">
                   <span>
                     Thời gian: {formatTimestamp(selectedCropSegment.start_time)} → {formatTimestamp(selectedCropSegment.end_time)}
                   </span>
@@ -815,7 +843,7 @@ export const SubtitleEditor: React.FC<SubtitleEditorProps> = ({
                   onChange={(e) => setSplitTime(parseFloat(e.target.value))}
                   className="input input-sm w-full font-mono bg-base-100 border-blue_slate-500/30 focus:border-glaucous-500 rounded-lg text-xs"
                 />
-                <span className="text-[11px] text-blue_slate-600 dark:text-blue_slate-800 mt-1 block">
+                <span className="text-[11px] text-base-content/60 mt-1 block">
                   Giới hạn: {splitDialogSegment.start_time.toFixed(2)}s đến {splitDialogSegment.end_time.toFixed(2)}s
                 </span>
               </div>

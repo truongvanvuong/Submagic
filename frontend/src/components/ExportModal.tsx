@@ -25,6 +25,32 @@ export interface ExportModalProps {
   onExportSuccess?: (filename: string) => void;
 }
 
+const ABBREVIATIONS = new Set([
+  'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.',
+  'vs.', 'etc.', 'e.g.', 'i.e.', 'st.', 'co.', 'inc.', 'ltd.',
+]);
+
+function removeTrailingPeriod(text: string): string {
+  if (!text) return '';
+  return text
+    .split('\n')
+    .map((line) => {
+      const s = line.trimEnd();
+      if (!s || s.endsWith('..') || s.endsWith('…') || s.endsWith('?') || s.endsWith('!') || !s.endsWith('.')) {
+        return line;
+      }
+      const tokens = s.split(/\s+/);
+      if (tokens.length > 0) {
+        const last = tokens[tokens.length - 1].toLowerCase().replace(/^[^\w]+/, '');
+        if (ABBREVIATIONS.has(last) || /^[A-Za-z]\.$/.test(tokens[tokens.length - 1])) {
+          return line;
+        }
+      }
+      return s.slice(0, -1) + line.slice(s.length);
+    })
+    .join('\n');
+}
+
 /**
  * Format timestamp in seconds to SRT timecode: 00:00:00,000
  */
@@ -94,11 +120,18 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
     if (format === 'vtt') {
       lines.push('WEBVTT\n');
+    } else if (format === 'ass') {
+      lines.push('[Script Info]');
+      lines.push('ScriptType: v4.00+');
+      lines.push('PlayResX: 1280');
+      lines.push('PlayResY: 720');
+      lines.push('[Events]');
+      lines.push('Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text');
     }
 
     segments.forEach((seg, i) => {
-      const orig = seg.text || '';
-      const trans = seg.translated_text || '';
+      const orig = removeTrailingPeriod(seg.text || '');
+      const trans = removeTrailingPeriod(seg.translated_text || '');
 
       let textToDisplay = orig;
       if (bilingualLayout === 'original_top') {
@@ -119,6 +152,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         lines.push(`${formatVttTime(seg.start_time)} --> ${formatVttTime(seg.end_time)}`);
         lines.push(textToDisplay);
         lines.push('');
+      } else if (format === 'ass') {
+        lines.push(`Dialogue: 0,${formatVttTime(seg.start_time).slice(0, 10)},${formatVttTime(seg.end_time).slice(0, 10)},Default,,0,0,0,,${textToDisplay.replace(/\n/g, '\\N')}`);
       } else {
         if (includeTimestampsInTxt) {
           lines.push(`[${formatVttTime(seg.start_time)} --> ${formatVttTime(seg.end_time)}] ${textToDisplay.replace(/\n/g, ' ')}`);
@@ -197,7 +232,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               <h3 className="text-base font-bold text-base-content tracking-tight">
                 Xuất Tệp Phụ Đề
               </h3>
-              <p className="text-xs text-blue_slate-600 dark:text-blue_slate-800 mt-0.5">
+              <p className="text-xs text-base-content/60 mt-0.5">
                 {project?.name || 'Dự án'} • {project?.segments?.length || 0} câu phụ đề
               </p>
             </div>
@@ -214,16 +249,26 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
         {/* Modal Content */}
         <div className="p-6 overflow-y-auto space-y-5 text-xs max-h-[70vh]">
+          {/* Empty segments banner */}
+          {(!project?.segments || project.segments.length === 0) && (
+            <div className="alert alert-warning text-xs py-2.5 px-3 rounded-xl flex items-center gap-2 shadow-xs">
+              <AlertCircle className="w-4 h-4 shrink-0 text-warning-content" />
+              <span className="text-warning-content font-medium">
+                Dự án này chưa có câu phụ đề nào để xuất. Hãy thực hiện trích xuất STT/OCR hoặc thêm phụ đề trước.
+              </span>
+            </div>
+          )}
+
           {/* Format Selection Cards */}
           <div>
             <label className="block text-xs font-bold text-base-content mb-2 tracking-tight">
               1. Chọn định dạng tệp xuất
             </label>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
               {/* SRT */}
               <div
                 onClick={() => setFormat('srt')}
-                className={`card card-bordered p-3.5 cursor-pointer rounded-xl transition-smooth ${
+                className={`card card-bordered p-3 cursor-pointer rounded-xl transition-smooth ${
                   format === 'srt'
                     ? 'border-glaucous-500 bg-glaucous-500/10 ring-1 ring-glaucous-400/50 shadow-sm'
                     : 'bg-base-100 border-blue_slate-500/25 hover:border-glaucous-500/40 hover:bg-base-100'
@@ -233,7 +278,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   <span className="font-bold text-sm text-base-content font-mono">.SRT</span>
                   <FileCode className={`w-4 h-4 ${format === 'srt' ? 'text-glaucous-600 dark:text-pale_sky-400' : 'text-base-content/40'}`} />
                 </div>
-                <p className="text-[11px] text-base-content/60 leading-tight">
+                <p className="text-[10px] text-base-content/60 leading-tight">
                   Chuẩn SubRip cho Premiere, VLC, CapCut
                 </p>
               </div>
@@ -241,7 +286,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               {/* VTT */}
               <div
                 onClick={() => setFormat('vtt')}
-                className={`card card-bordered p-3.5 cursor-pointer rounded-xl transition-smooth ${
+                className={`card card-bordered p-3 cursor-pointer rounded-xl transition-smooth ${
                   format === 'vtt'
                     ? 'border-glaucous-500 bg-glaucous-500/10 ring-1 ring-glaucous-400/50 shadow-sm'
                     : 'bg-base-100 border-blue_slate-500/25 hover:border-glaucous-500/40 hover:bg-base-100'
@@ -251,15 +296,33 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   <span className="font-bold text-sm text-base-content font-mono">.VTT</span>
                   <FileCode className={`w-4 h-4 ${format === 'vtt' ? 'text-glaucous-600 dark:text-pale_sky-400' : 'text-base-content/40'}`} />
                 </div>
-                <p className="text-[11px] text-base-content/60 leading-tight">
+                <p className="text-[10px] text-base-content/60 leading-tight">
                   Chuẩn WebVTT cho trình phát Web HTML5
+                </p>
+              </div>
+
+              {/* ASS */}
+              <div
+                onClick={() => setFormat('ass')}
+                className={`card card-bordered p-3 cursor-pointer rounded-xl transition-smooth ${
+                  format === 'ass'
+                    ? 'border-glaucous-500 bg-glaucous-500/10 ring-1 ring-glaucous-400/50 shadow-sm'
+                    : 'bg-base-100 border-blue_slate-500/25 hover:border-glaucous-500/40 hover:bg-base-100'
+                }`}
+              >
+                <div className="flex items-center justify-between w-full mb-1">
+                  <span className="font-bold text-sm text-base-content font-mono">.ASS</span>
+                  <FileCode className={`w-4 h-4 ${format === 'ass' ? 'text-glaucous-600 dark:text-pale_sky-400' : 'text-base-content/40'}`} />
+                </div>
+                <p className="text-[10px] text-base-content/60 leading-tight">
+                  Định dạng nâng cao với cỡ chữ theo độ phân giải
                 </p>
               </div>
 
               {/* TXT */}
               <div
                 onClick={() => setFormat('txt')}
-                className={`card card-bordered p-3.5 cursor-pointer rounded-xl transition-smooth ${
+                className={`card card-bordered p-3 cursor-pointer rounded-xl transition-smooth ${
                   format === 'txt'
                     ? 'border-glaucous-500 bg-glaucous-500/10 ring-1 ring-glaucous-400/50 shadow-sm'
                     : 'bg-base-100 border-blue_slate-500/25 hover:border-glaucous-500/40 hover:bg-base-100'
@@ -269,7 +332,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   <span className="font-bold text-sm text-base-content font-mono">.TXT</span>
                   <FileText className={`w-4 h-4 ${format === 'txt' ? 'text-glaucous-600 dark:text-pale_sky-400' : 'text-base-content/40'}`} />
                 </div>
-                <p className="text-[11px] text-base-content/60 leading-tight">
+                <p className="text-[10px] text-base-content/60 leading-tight">
                   Văn bản thuần làm kịch bản hoặc tóm tắt
                 </p>
               </div>
@@ -410,7 +473,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </button>
             </div>
 
-            <div className="bg-blue_slate-100 text-ghost_white-DEFAULT rounded-xl p-3.5 font-mono text-[11px] leading-relaxed max-h-40 overflow-y-auto border border-blue_slate-500/30 whitespace-pre shadow-inner">
+            <div className="bg-base-100 text-base-content rounded-xl p-3.5 font-mono text-[11px] leading-relaxed max-h-40 overflow-y-auto border border-blue_slate-500/30 whitespace-pre shadow-inner">
               {previewText}
             </div>
           </div>

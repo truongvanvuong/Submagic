@@ -27,6 +27,7 @@ import type {
   STTJobRequest,
   SubtitleSegment,
   SubtitleSegmentUpdate,
+  TranslationContext,
   WebSocketEvent,
 } from './types/subtitle';
 
@@ -49,6 +50,8 @@ import {
   getAvailableModels,
   getExtractionHistory,
   deleteExtractionHistory,
+  deleteProject,
+  bulkDeleteProjects,
   JobWebSocketClient,
 } from './services/api';
 
@@ -58,6 +61,7 @@ import { ExportModal } from './components/ExportModal';
 import { VideoWorkspace, PRESET_16_9 } from './components/VideoWorkspace';
 import { SubtitleEditor } from './components/SubtitleEditor';
 import { HistoryDrawer } from './components/HistoryDrawer';
+import { ProjectDropdown } from './components/ProjectDropdown';
 import { ToastContainer, type ToastItem } from './components/ToastContainer';
 
 const LAST_PROJECT_STORAGE_KEY = 'submagic_last_project_id';
@@ -148,15 +152,16 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Show Toast (DaisyUI top-right toast + OS/Desktop Notification if backgrounded)
+  // Show Toast with support for collapsible details
   const showToast = useCallback((
     type: 'success' | 'info' | 'warning' | 'error',
     title: string,
     message?: string,
-    duration = 4000
+    duration = 4500,
+    details?: string[]
   ) => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    setToasts((prev) => [...prev, { id, type, title, message, duration }]);
+    setToasts((prev) => [...prev, { id, type, title, message, duration, details }]);
 
     // Trigger System / Browser Notification (displays on OS even if user is on another tab or app)
     if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -526,7 +531,16 @@ export const App: React.FC = () => {
       setJobStatus('running');
       setJobProgress(0);
       setJobStatusText('Khởi động Gemini AI xử lý ngôn ngữ...');
-      appendLog(`Khởi chạy Gemini AI (${options.fix_ocr_spelling ? 'Sửa chính tả' : `Dịch sang ${options.translate_to}`})...`, 'info');
+      const contextMap: Record<string, string> = {
+        historical: 'Cổ trang',
+        modern: 'Hiện đại',
+        casual: 'Đời thường',
+      };
+      const ctxLabel = options.translation_context ? ` [${contextMap[options.translation_context] || 'Đời thường'}]` : '';
+      appendLog(
+        `Khởi chạy Gemini AI (${options.fix_ocr_spelling ? 'Sửa chính tả' : `Dịch sang ${options.translate_to}${ctxLabel}`})...`,
+        'info'
+      );
       await startLLMJob(options);
     } catch (err: any) {
       setIsProcessing(false);
@@ -663,8 +677,8 @@ export const App: React.FC = () => {
     });
   };
 
-  // Requirement 3: Translate triggered directly with target language from daisyUI Select
-  const handleTranslateClick = (targetLang: string) => {
+  // Translate triggered directly with target language & translation context from daisyUI Select
+  const handleTranslateClick = (targetLang: string, context: TranslationContext = 'casual') => {
     if (!activeProject) return;
     let savedKey: string | undefined = undefined;
     try {
@@ -675,12 +689,18 @@ export const App: React.FC = () => {
     if (!savedKey) {
       appendLog('Lưu ý: Chưa nhập Gemini API Key trong Control Panel. Vui lòng nhập API Key ở bảng điều khiển bên trái để dịch thuật.', 'warning');
     }
+    const contextMap: Record<string, string> = {
+      historical: 'Cổ trang',
+      modern: 'Hiện đại',
+      casual: 'Đời thường',
+    };
     handleStartLLM({
       project_id: activeProject.id,
       gemini_api_key: savedKey,
       fix_ocr_spelling: false,
       translate_to: targetLang,
-      batch_size: 60,
+      translation_context: context,
+      batch_size: 50,
     });
   };
 
@@ -715,6 +735,74 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleDeleteProjectFromHistory = async (projectId: string) => {
+    try {
+      await deleteProject(projectId);
+      setHistoryList((prev) => prev.filter((item) => item.project_id !== projectId));
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+      if (activeProject?.id === projectId) {
+        setActiveProject(null);
+        setSegments([]);
+        localStorage.removeItem(LAST_PROJECT_STORAGE_KEY);
+      }
+      appendLog('Đã xóa vĩnh viễn dự án và các tệp liên quan trên đĩa.', 'info');
+      showToast('success', 'Đã xóa dự án', 'Dự án và toàn bộ tệp liên quan đã được dọn sạch.');
+    } catch (err: any) {
+      const msg = err.message || 'Lỗi khi xóa dự án.';
+      appendLog(`Lỗi xóa dự án: ${msg}`, 'error');
+      showToast('error', 'Xóa thất bại', msg);
+    }
+  };
+
+  const handleDeleteProjectsBulkFromHistory = async (projectIds: string[]) => {
+    // Deduplicate IDs before sending
+    const uniqueIds = Array.from(new Set(projectIds.filter((id) => id && id.trim().length > 0)));
+    if (uniqueIds.length === 0) return;
+
+    try {
+      const res = await bulkDeleteProjects(uniqueIds);
+      const deletedSet = new Set(res.deleted);
+
+      // Clean history and projects state immediately
+      if (res.deleted.length > 0 || (res.not_found_count && res.not_found_count > 0)) {
+        setHistoryList((prev) => prev.filter((item) => !deletedSet.has(item.project_id)));
+        setProjects((prev) => prev.filter((p) => !deletedSet.has(p.id)));
+
+        // If the currently active project was deleted, clear the editor state
+        if (activeProject && (deletedSet.has(activeProject.id) || uniqueIds.includes(activeProject.id))) {
+          setActiveProject(null);
+          setSegments([]);
+          localStorage.removeItem(LAST_PROJECT_STORAGE_KEY);
+        }
+      }
+
+      const deletedCount = res.deleted_count || res.deleted.length || 0;
+      const failedCount = res.failed?.length || 0;
+
+      if (failedCount === 0) {
+        const summary =
+          deletedCount > 0
+            ? `Đã xóa ${deletedCount} dự án.`
+            : 'Các dự án đã chọn đã được dọn sạch khỏi hệ thống.';
+        appendLog(summary, 'info');
+        showToast('success', 'Xóa thành công', summary, 4000);
+      } else {
+        const summary = `Đã xóa ${deletedCount} dự án. ${failedCount} dự án thất bại.`;
+        const detailList = res.failed!.map((f) => {
+          const matchedProj = projects.find((p) => p.id === f.project_id);
+          const name = matchedProj ? matchedProj.name : f.project_id;
+          return `${name}: ${f.reason}`;
+        });
+        appendLog(`${summary} (${detailList.join('; ')})`, 'warning');
+        showToast('warning', 'Xóa hàng loạt', summary, 6000, detailList);
+      }
+    } catch (err: any) {
+      const msg = err.message || 'Lỗi khi xóa hàng loạt dự án.';
+      appendLog(`Lỗi xóa hàng loạt: ${msg}`, 'error');
+      showToast('error', 'Xóa thất bại', msg);
+    }
+  };
+
   return (
     <div className="flex flex-col min-h-screen bg-base-100 text-base-content font-sans antialiased">
       {/* Top Main Navigation Header */}
@@ -732,32 +820,27 @@ export const App: React.FC = () => {
 
         {/* Center: Project Switcher & Actions */}
         <div className="flex items-center gap-2">
-          {/* Project Selector Dropdown */}
-          <div className="flex items-center gap-1.5 bg-base-300/60 hover:bg-base-300 border border-blue_slate-500/25 rounded-lg px-2.5 py-1 transition-smooth">
-            <FolderOpen className="w-3.5 h-3.5 text-base-content/60" />
-            <select
-              value={activeProject?.id || ''}
-              onChange={(e) => {
-                if (e.target.value) {
-                  loadProjectDetails(e.target.value);
-                } else {
-                  setActiveProject(null);
-                  setSegments([]);
-                  setJobStatus('idle');
-                  setJobProgress(0);
-                  setIsProcessing(false);
-                }
-              }}
-              className="bg-transparent text-xs font-medium text-base-content focus:outline-none max-w-[220px] truncate cursor-pointer"
-            >
-              <option value="">-- Chưa chọn video --</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.mode.toUpperCase()})
-                </option>
-              ))}
-            </select>
-          </div>
+          {/* Project Selector Dropdown with search and direct delete */}
+          <ProjectDropdown
+            projects={projects}
+            activeProject={activeProject}
+            isProcessing={isProcessing}
+            disabled={isProcessing}
+            onSelectProject={(projectId) => {
+              if (projectId) {
+                loadProjectDetails(projectId);
+              } else {
+                setActiveProject(null);
+                setSegments([]);
+                setJobStatus('idle');
+                setJobProgress(0);
+                setIsProcessing(false);
+                localStorage.removeItem(LAST_PROJECT_STORAGE_KEY);
+              }
+            }}
+            onDeleteProject={handleDeleteProjectFromHistory}
+            onBulkDeleteProjects={handleDeleteProjectsBulkFromHistory}
+          />
 
           {/* New Project Button */}
           <button
@@ -942,6 +1025,9 @@ export const App: React.FC = () => {
         onSelectProject={handleSelectHistoryProject}
         onDeleteHistory={handleDeleteHistoryItem}
         onDeleteHistoryBulk={handleDeleteHistoryBulk}
+        onDeleteProject={handleDeleteProjectFromHistory}
+        onDeleteProjectsBulk={handleDeleteProjectsBulkFromHistory}
+        onError={(msg) => showToast('error', 'Tải phụ đề thất bại', msg)}
       />
 
       {/* New Project Modal Dialog */}

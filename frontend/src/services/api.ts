@@ -9,6 +9,8 @@ import type {
   ExtractionMode,
   HardwareInfo,
   JobStatusResponse,
+  LLMEstimateRequest,
+  LLMEstimateResponse,
   LLMJobRequest,
   ModelCatalogResponse,
   OCRJobRequest,
@@ -219,6 +221,28 @@ export async function deleteProject(id: string): Promise<{ deleted: boolean; pro
 }
 
 /**
+ * Bulk delete projects and their associated files safely.
+ */
+export async function bulkDeleteProjects(
+  projectIds: string[]
+): Promise<{
+  deleted_count: number;
+  not_found_count?: number;
+  deleted: string[];
+  failed?: Array<{ project_id: string; reason: string }>;
+}> {
+  return request<{
+    deleted_count: number;
+    not_found_count?: number;
+    deleted: string[];
+    failed?: Array<{ project_id: string; reason: string }>;
+  }>(`/api/projects/bulk-delete`, {
+    method: 'POST',
+    body: JSON.stringify({ project_ids: projectIds }),
+  });
+}
+
+/**
  * Add a manual subtitle segment to a project.
  */
 export async function addSegment(
@@ -344,6 +368,16 @@ export async function startOCRJob(req: OCRJobRequest): Promise<JobStatusResponse
  */
 export async function startLLMJob(req: LLMJobRequest): Promise<JobStatusResponse> {
   return request<JobStatusResponse>('/api/jobs/llm', {
+    method: 'POST',
+    body: JSON.stringify(req),
+  });
+}
+
+/**
+ * Estimate token usage and cost for an LLM translation/polish job.
+ */
+export async function estimateLLMJob(req: LLMEstimateRequest): Promise<LLMEstimateResponse> {
+  return request<LLMEstimateResponse>('/api/jobs/estimate-llm', {
     method: 'POST',
     body: JSON.stringify(req),
   });

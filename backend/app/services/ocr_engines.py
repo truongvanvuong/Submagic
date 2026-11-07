@@ -153,19 +153,84 @@ def crop_text_box(
     return warped
 
 
+def preprocess_roi_for_ocr(image_bgr: np.ndarray) -> np.ndarray:
+    """
+    Preprocess cropped subtitle ROI for improved OCR recognition on CPU:
+    1. Upscales small crops (height < 70) so character strokes are clear.
+    2. Enhances stroke contrast using CLAHE on luminance to separate text from complex backgrounds.
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return image_bgr
+
+    h, w = image_bgr.shape[:2]
+    # Upscale if small
+    if h < 70:
+        scale = min(2.5, 76.0 / float(h))
+        new_w = max(16, int(round(w * scale)))
+        new_h = max(16, int(round(h * scale)))
+        working = cv2.resize(image_bgr, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+    else:
+        working = image_bgr.copy()
+
+    # Contrast enhancement with CLAHE
+    lab = cv2.cvtColor(working, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
+
+
+def create_binarized_variant(image_bgr: np.ndarray) -> np.ndarray:
+    """
+    Create a high-contrast binarized 3-channel variant (Otsu thresholding)
+    for reading subtitles with complex stroke outlines, shadow, or textured background.
+    """
+    if image_bgr is None or image_bgr.size == 0:
+        return image_bgr
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
+    blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, bin_mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return cv2.cvtColor(bin_mask, cv2.COLOR_GRAY2BGR)
+
+
 def order_and_merge_ocr_lines(
     lines: list[OCRTextLine],
     min_confidence: float = 0.30,
+    stats: dict[str, int] | None = None,
+    diagnostic_logging: bool = False,
 ) -> tuple[str, float, list[OCRTextLine]]:
     """
     Filter low-confidence noise, sort detected text boxes top-to-bottom and left-to-right,
     merge boxes that sit on the same horizontal subtitle line, and return:
     (merged_text, average_confidence, filtered_lines).
+    Applies adaptive confidence threshold for short/CJK subtitles to avoid dropping valid text.
+    Records diagnostic filtering counters when `stats` is provided.
     """
     valid: list[tuple[float, float, float, OCRTextLine]] = []
     for item in lines:
         cleaned = clean_ocr_text(item.text)
-        if not cleaned or float(item.confidence) < min_confidence:
+        if not cleaned:
+            if stats is not None:
+                stats["too_short"] = stats.get("too_short", 0) + 1
+            if diagnostic_logging:
+                logger.info("[OCR DIAG] Filtered line: empty or too short")
+            continue
+        is_cjk = bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", cleaned))
+        effective_min_conf = (
+            max(0.20, min_confidence - 0.10)
+            if (is_cjk or len(cleaned) <= 4)
+            else min_confidence
+        )
+        if float(item.confidence) < effective_min_conf:
+            if stats is not None:
+                stats["low_confidence"] = stats.get("low_confidence", 0) + 1
+            if diagnostic_logging:
+                logger.info(
+                    "[OCR DIAG] Filtered line (low confidence %.2f < %.2f): '%s'",
+                    item.confidence,
+                    effective_min_conf,
+                    cleaned,
+                )
             continue
         norm_line = OCRTextLine(
             text=cleaned,
@@ -313,6 +378,48 @@ class OCREngineCache:
         merged_text, avg_conf, ordered_lines = order_and_merge_ocr_lines(
             lines, min_confidence=min_confidence
         )
+
+        # If no text detected or confidence is weak, retry with CLAHE/upscaling and binarized variants
+        if not merged_text or avg_conf < 0.60:
+            candidates: list[np.ndarray] = []
+            prep_img = preprocess_roi_for_ocr(image_bgr)
+            if prep_img.shape != image_bgr.shape or np.any(prep_img != image_bgr):
+                candidates.append(prep_img)
+            bin_img = create_binarized_variant(prep_img)
+            candidates.append(bin_img)
+
+            for variant in candidates:
+                try:
+                    retry_out = engine(variant)
+                    retry_items = retry_out[0] if isinstance(retry_out, tuple) else retry_out
+                    if retry_items:
+                        retry_lines: list[OCRTextLine] = []
+                        for item in retry_items:
+                            if not item or len(item) < 3:
+                                continue
+                            b_raw, t_raw, s_raw = item[0], item[1], item[2]
+                            b = (
+                                [[float(pt[0]), float(pt[1])] for pt in b_raw]
+                                if b_raw is not None
+                                else None
+                            )
+                            retry_lines.append(
+                                OCRTextLine(
+                                    text=str(t_raw or ""),
+                                    confidence=float(s_raw if s_raw is not None else 0.0),
+                                    box=b,
+                                )
+                            )
+                        r_text, r_conf, r_ordered = order_and_merge_ocr_lines(
+                            retry_lines, min_confidence=min_confidence
+                        )
+                        if r_text and (not merged_text or r_conf > avg_conf):
+                            merged_text, avg_conf, ordered_lines = r_text, r_conf, r_ordered
+                            if avg_conf >= 0.70:
+                                break
+                except Exception:
+                    pass
+
         return OCRFrameResult(
             text=merged_text,
             confidence=avg_conf,
@@ -373,6 +480,19 @@ class OCREngineCache:
             except TypeError:
                 v_text = str(viet_predictor.predict(pil_img) or "")
                 v_prob = float(det_line.confidence)
+
+            # If prediction is weak, try CLAHE or binarized variant
+            if v_prob < 0.60 or not v_text.strip():
+                prep_crop = preprocess_roi_for_ocr(line_crop_bgr)
+                try:
+                    prep_pil = Image.fromarray(cv2.cvtColor(prep_crop, cv2.COLOR_BGR2RGB))
+                    out2 = viet_predictor.predict(prep_pil, return_prob=True)
+                    if isinstance(out2, tuple) and len(out2) == 2:
+                        t2, p2 = str(out2[0] or ""), float(out2[1])
+                        if p2 > v_prob and clean_ocr_text(t2):
+                            v_text, v_prob = t2, p2
+                except Exception:
+                    pass
 
             v_text = clean_ocr_text(v_text)
             if v_text:

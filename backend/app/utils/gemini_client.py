@@ -127,7 +127,15 @@ def generate_content_with_resilience(
             # Check for immediate fail conditions (invalid API key)
             lower_err = err_str.lower()
             if any(k in lower_err for k in ["api_key_invalid", "api key not valid", "unregistered", "api_key_expired"]):
-                raise ValueError(f"Gemini API Key không hợp lệ: {err_str}") from err
+                raise ValueError("Gemini API Key không hợp lệ hoặc đã hết hạn.") from err
+
+            # Check for rate limit / quota exceeded
+            if any(k in lower_err for k in ["resource_exhausted", "429", "quota exceeded", "rate limit"]):
+                raise ValueError("Hạn mức Gemini API đã vượt quá giới hạn (429 Rate Limit / Quota Exceeded). Vui lòng đợi 1 phút hoặc kiểm tra hạn mức gói cước.") from err
+
+            # Check for timeout / network issues
+            if any(k in lower_err for k in ["timed out", "timeout", "connecterror", "connection refused", "name resolution", "getaddrinfo"]):
+                logger.warning("Lỗi mạng / timeout với model %s: %s", model_name, err_str)
             continue
 
     # If loop completes without return

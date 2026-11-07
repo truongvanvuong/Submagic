@@ -114,8 +114,10 @@ data/
 # --------------------------------------------------------
 # 6. Kiểm thử & Cache (Testing & Caches)
 # --------------------------------------------------------
+/.pytest_cache/
 .pytest_cache/
 backend/.pytest_cache/
+scripts/__pycache__/
 .coverage
 .coverage.*
 htmlcov/
@@ -123,7 +125,12 @@ htmlcov/
 .nox/
 
 # --------------------------------------------------------
-# 7. IDE & Hệ điều hành (OS / Editor configs)
+# 7. Tài liệu nhị phân dung lượng lớn
+# --------------------------------------------------------
+docs/*.pdf
+
+# --------------------------------------------------------
+# 8. IDE & Hệ điều hành (OS / Editor configs)
 # --------------------------------------------------------
 # Hệ điều hành
 .DS_Store

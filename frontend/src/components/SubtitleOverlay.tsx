@@ -216,24 +216,26 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
     return null;
   }
 
-  // Responsive font size styling via container query units (cqw) or relative clamps
-  let fontSizeStyle: React.CSSProperties = {};
-  if (settings.fontSize === 'small') {
-    fontSizeStyle = { fontSize: 'clamp(12px, 2.0cqw, 20px)' };
-  } else if (settings.fontSize === 'large') {
-    fontSizeStyle = { fontSize: 'clamp(18px, 3.8cqw, 42px)' };
-  } else {
-    // Medium (Default)
-    fontSizeStyle = { fontSize: 'clamp(14px, 2.8cqw, 30px)' };
-  }
+  // Calculate responsive font size proportional to actual video render height
+  const videoHeight = renderRect.height;
+  const scaleMultiplier = (settings.fontSizeScale ?? 1.0) * (
+    settings.fontSize === 'small' ? 0.82 :
+    settings.fontSize === 'large' ? 1.25 : 1.0
+  );
+  // ~3.5% of video height provides standard TV/movie subtitle proportion without obstructing content
+  const computedFontSizePx = Math.max(11, Math.min(32, Math.round(videoHeight * 0.035 * scaleMultiplier)));
+  const fontSizeStyle: React.CSSProperties = {
+    fontSize: `${computedFontSizePx}px`,
+    lineHeight: 1.35,
+  };
 
-  // Default design: Black background with white text as requested
-  const bgClasses = 'bg-black/85 backdrop-blur-xs rounded-xl px-4 py-2 shadow-2xl border border-white/15';
+  // Compact, translucent background (about 65% black with subtle blur and slim padding)
+  const bgClasses = 'bg-black/65 backdrop-blur-xs rounded-lg px-3 py-1.5 shadow-lg border border-white/10';
 
   // High-contrast text drop shadow for crisp readability on any background
   const textShadowStyle: React.CSSProperties = {
     textShadow: `
-      0 2px 4px rgba(0, 0, 0, 0.95),
+      0 1px 3px rgba(0, 0, 0, 0.95),
       0 0 2px #000000,
       -1px -1px 0 #000,
        1px -1px 0 #000,
@@ -253,7 +255,7 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
         containerType: 'inline-size',
       }}
     >
-      {/* Draggable Subtitle Box Container */}
+      {/* Draggable Subtitle Box Container (bounded to 80% video width) */}
       <div
         onMouseDown={handleMouseDown}
         title="Nhấp giữ và kéo để di chuyển vị trí phụ đề"
@@ -266,7 +268,7 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
           left: `${currentPos.x * 100}%`,
           top: `${currentPos.y * 100}%`,
           transform: 'translate(-50%, -50%)',
-          maxWidth: '92%',
+          maxWidth: '80%',
         }}
       >
         <div className="relative group/box">

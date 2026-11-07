@@ -1,9 +1,44 @@
 """Subtitle formatting and export engine for .SRT, .VTT, and .TXT (including Bilingual support)."""
 from __future__ import annotations
 
+import re
 import textwrap
 
 from app.schemas import BilingualLayout, ExportFormat, SubtitleSegment
+
+KNOWN_ABBREVIATIONS = {
+    "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.",
+    "vs.", "etc.", "e.g.", "i.e.", "st.", "co.", "inc.", "ltd."
+}
+
+
+def remove_trailing_period_from_line(line: str) -> str:
+    """Remove trailing '.' from a single line, keeping '?', '!', '...', decimals, and abbreviations."""
+    s = line.rstrip()
+    if not s or s.endswith("..") or s.endswith("…") or s.endswith("?") or s.endswith("!") or not s.endswith("."):
+        return line
+    tokens = s.split()
+    if tokens:
+        last = re.sub(r'^[^\w]+', '', tokens[-1].lower())
+        if last in KNOWN_ABBREVIATIONS or re.fullmatch(r'[A-Za-z]\.', tokens[-1]):
+            return line
+    trailing_whitespace = line[len(s):]
+    return s[:-1] + trailing_whitespace
+
+
+def remove_trailing_period(text: str | None) -> str:
+    """
+    Remove trailing '.' at the end of each subtitle line/segment.
+    Preserves:
+      - '?', '!', '...' (and '…')
+      - periods in the middle of sentences
+      - decimals (e.g. '3.5')
+      - abbreviations (e.g. 'Mr.', 'Dr.', 'etc.')
+    """
+    if not text:
+        return ""
+    lines = text.split("\n")
+    return "\n".join(remove_trailing_period_from_line(line) for line in lines)
 
 
 def format_timestamp_srt(seconds: float) -> str:
@@ -104,8 +139,8 @@ def _resolve_segment_text(
     wrap_lines: bool = False,
     max_chars: int = 42,
 ) -> str:
-    orig = clean_subtitle_text(seg.text or "")
-    trans = clean_subtitle_text(seg.translated_text or "")
+    orig = remove_trailing_period(clean_subtitle_text(seg.text or ""))
+    trans = remove_trailing_period(clean_subtitle_text(seg.translated_text or ""))
 
     if layout == BilingualLayout.TRANSLATED_ONLY:
         resolved = trans if trans else orig
@@ -127,6 +162,15 @@ def _resolve_segment_text(
     return resolved
 
 
+def format_timestamp_ass(seconds: float) -> str:
+    """Format seconds into ASS timestamp: H:MM:SS.cc"""
+    total_cs = max(0, int(round(seconds * 100)))
+    hours, rem = divmod(total_cs, 360000)
+    minutes, rem = divmod(rem, 6000)
+    secs, cs = divmod(rem, 100)
+    return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
+
+
 def format_subtitles(
     segments: list[SubtitleSegment],
     export_format: ExportFormat = ExportFormat.SRT,
@@ -134,8 +178,10 @@ def format_subtitles(
     include_timestamps_in_txt: bool = False,
     wrap_lines: bool = False,
     max_chars_per_line: int = 42,
+    video_width: int = 1280,
+    video_height: int = 720,
 ) -> str:
-    """Render subtitle segments into .srt, .vtt, or .txt string."""
+    """Render subtitle segments into .srt, .vtt, .txt, or .ass string with resolution-proportional font scaling."""
     sorted_segs = sorted(segments, key=lambda s: (s.start_time, s.index))
 
     if export_format == ExportFormat.SRT:
@@ -163,6 +209,41 @@ def format_subtitles(
             end_str = format_timestamp_vtt(max(seg.start_time + 0.1, seg.end_time))
             blocks.append(f"{idx}\n{start_str} --> {end_str}\n{body}\n")
         return "\n".join(blocks)
+
+    if export_format == ExportFormat.ASS:
+        # Scale font size dynamically according to video resolution (default ~4.0% of video height)
+        play_w = max(640, int(video_width or 1280))
+        play_h = max(360, int(video_height or 720))
+        font_size = max(16, int(round(play_h * 0.040)))
+        margin_v = max(16, int(round(play_h * 0.045)))
+        margin_lr = max(24, int(round(play_w * 0.08)))
+
+        header = [
+            "[Script Info]",
+            "ScriptType: v4.00+",
+            f"PlayResX: {play_w}",
+            f"PlayResY: {play_h}",
+            "ScaledBorderAndShadow: yes",
+            "",
+            "[V4+ Styles]",
+            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+            f"Style: Default,Arial,{font_size},&H00FFFFFF,&H000000FF,&H00000000,&H66000000,0,0,0,0,100,100,0,0,3,1,0,2,{margin_lr},{margin_lr},{margin_v},1",
+            "",
+            "[Events]",
+            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+        ]
+        events = []
+        for seg in sorted_segs:
+            body = _resolve_segment_text(
+                seg, bilingual_layout, wrap_lines=wrap_lines, max_chars=max_chars_per_line
+            )
+            if not body:
+                continue
+            start_str = format_timestamp_ass(seg.start_time)
+            end_str = format_timestamp_ass(max(seg.start_time + 0.1, seg.end_time))
+            ass_body = body.replace("\n", "\\N")
+            events.append(f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{ass_body}")
+        return "\n".join(header + events) + ("\n" if events else "")
 
     # ExportFormat.TXT
     lines: list[str] = []

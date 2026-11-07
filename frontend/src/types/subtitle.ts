@@ -27,7 +27,7 @@ export type JobStatus =
 /** Alias for JobStatus representing the status of a project. */
 export type ProjectStatus = JobStatus;
 
-export type ExportFormat = 'srt' | 'vtt' | 'txt';
+export type ExportFormat = 'srt' | 'vtt' | 'txt' | 'ass';
 
 export type BilingualLayout =
   | 'none'
@@ -41,6 +41,7 @@ export type BilingualLayout =
 export interface SubtitleOverlaySettings {
   enabled: boolean;
   fontSize: 'small' | 'medium' | 'large';
+  fontSizeScale?: number; // Multiplier: 0.6 to 1.6
   position: 'bottom' | 'center' | 'top';
   background: 'none' | 'translucent' | 'solid';
   languageMode: 'original' | 'translated' | 'bilingual';
@@ -53,6 +54,7 @@ export interface SubtitleOverlaySettings {
 export const DEFAULT_SUBTITLE_SETTINGS: SubtitleOverlaySettings = {
   enabled: true,
   fontSize: 'medium',
+  fontSizeScale: 1.0,
   position: 'bottom',
   background: 'translucent',
   languageMode: 'bilingual',
@@ -216,14 +218,40 @@ export interface OCRJobRequest {
 }
 
 /**
+ * Supported translation contexts with custom tone and pronouns.
+ */
+export type TranslationContext = 'casual' | 'historical' | 'modern';
+
+/**
  * LLM Post-processing (spelling fix / bilingual translation) request.
  */
 export interface LLMJobRequest {
   project_id: string;
   fix_ocr_spelling?: boolean;
   translate_to?: string | null;
+  translation_context?: TranslationContext;
+  force_retranslate?: boolean;
   batch_size?: number;
   gemini_api_key?: string | null;
+  model?: string | null;
+}
+
+export interface LLMEstimateRequest {
+  project_id: string;
+  translate_to?: string | null;
+  translation_context?: TranslationContext;
+  fix_ocr_spelling?: boolean;
+  force_retranslate?: boolean;
+}
+
+export interface LLMEstimateResponse {
+  total_segments: number;
+  cached_segments: number;
+  segments_to_translate: number;
+  estimated_prompt_tokens: number;
+  estimated_completion_tokens: number;
+  estimated_total_tokens: number;
+  estimated_cost_usd: number;
 }
 
 /**

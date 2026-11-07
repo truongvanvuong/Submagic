@@ -167,7 +167,7 @@ class TestTier1SubtitleExport:
         assert res.status_code == 200
         assert "application/x-subrip" in res.headers["content-type"]
         body = res.text
-        assert "1\n00:00:00,000 --> 00:00:01,850\nChào mừng các bạn đến với ứng dụng Sub Magic." in body
+        assert "1\n00:00:00,000 --> 00:00:01,850\nChào mừng các bạn đến với ứng dụng Sub Magic" in body
         assert "2\n00:00:02,100 --> 00:00:04,300" in body
         assert "Welcome everyone" not in body  # single mode must not include translation
 
@@ -181,7 +181,7 @@ class TestTier1SubtitleExport:
         body = res.text
         assert body.startswith("WEBVTT")
         assert "00:00:00.000 --> 00:00:01.850" in body
-        assert "Chào mừng các bạn đến với ứng dụng Sub Magic." in body
+        assert "Chào mừng các bạn đến với ứng dụng Sub Magic" in body
 
     def test_export_txt_without_timestamps(self, test_client: TestClient, sample_video: Path):
         loop = asyncio.get_event_loop()
@@ -192,7 +192,7 @@ class TestTier1SubtitleExport:
         assert "text/plain" in res.headers["content-type"]
         lines = [line.strip() for line in res.text.strip().split("\n") if line.strip()]
         assert len(lines) == 3
-        assert lines[0] == "Chào mừng các bạn đến với ứng dụng Sub Magic."
+        assert lines[0] == "Chào mừng các bạn đến với ứng dụng Sub Magic"
         assert not lines[0].startswith("[")
 
     def test_export_txt_with_timestamps(self, test_client: TestClient, sample_video: Path):
@@ -202,7 +202,7 @@ class TestTier1SubtitleExport:
         res = test_client.get(f"/api/projects/{proj_id}/export?format=txt&include_timestamps_in_txt=true")
         assert res.status_code == 200
         body = res.text
-        assert "[00:00:00.000 -> 00:00:01.850] Chào mừng các bạn đến với ứng dụng Sub Magic." in body
+        assert "[00:00:00.000 -> 00:00:01.850] Chào mừng các bạn đến với ứng dụng Sub Magic" in body
         assert "[00:00:02.100 -> 00:00:04.300]" in body
 
     def test_export_bilingual_original_top(self, test_client: TestClient, sample_video: Path):
@@ -214,8 +214,8 @@ class TestTier1SubtitleExport:
         body = res.text
         expected_block = (
             "1\n00:00:00,000 --> 00:00:01,850\n"
-            "Chào mừng các bạn đến với ứng dụng Sub Magic.\n"
-            "Welcome everyone to the Sub Magic application."
+            "Chào mừng các bạn đến với ứng dụng Sub Magic\n"
+            "Welcome everyone to the Sub Magic application"
         )
         assert expected_block in body
 
@@ -228,8 +228,8 @@ class TestTier1SubtitleExport:
         body = res.text
         expected_block = (
             "1\n00:00:00,000 --> 00:00:01,850\n"
-            "Welcome everyone to the Sub Magic application.\n"
-            "Chào mừng các bạn đến với ứng dụng Sub Magic."
+            "Welcome everyone to the Sub Magic application\n"
+            "Chào mừng các bạn đến với ứng dụng Sub Magic"
         )
         assert expected_block in body
 
@@ -240,8 +240,8 @@ class TestTier1SubtitleExport:
         res = test_client.get(f"/api/projects/{proj_id}/export?format=srt&bilingual_layout=translated_only")
         assert res.status_code == 200
         body = res.text
-        assert "Welcome everyone to the Sub Magic application." in body
-        assert "Chào mừng các bạn đến với ứng dụng Sub Magic." not in body
+        assert "Welcome everyone to the Sub Magic application" in body
+        assert "Chào mừng các bạn đến với ứng dụng Sub Magic" not in body
 
     def test_export_post_endpoint_with_custom_disk_path(self, test_client: TestClient, sample_video: Path, tmp_path: Path):
         loop = asyncio.get_event_loop()
@@ -257,7 +257,7 @@ class TestTier1SubtitleExport:
         assert res.status_code == 200
         assert target_file.exists()
         saved_text = target_file.read_text(encoding="utf-8")
-        assert "Chào mừng các bạn đến với ứng dụng Sub Magic." in saved_text
+        assert "Chào mừng các bạn đến với ứng dụng Sub Magic" in saved_text
         assert "Welcome everyone" in saved_text
 
 
@@ -872,7 +872,7 @@ class TestTier3CrossFeatureCombinations:
         res_vtt = test_client.get(f"/api/projects/{proj_id}/export?format=vtt&bilingual_layout=none")
         res_txt = test_client.get(f"/api/projects/{proj_id}/export?format=txt&include_timestamps_in_txt=false")
 
-        common_snippet = "Chào mừng các bạn đến với ứng dụng Sub Magic."
+        common_snippet = "Chào mừng các bạn đến với ứng dụng Sub Magic"
         assert common_snippet in res_srt.text
         assert common_snippet in res_vtt.text
         assert common_snippet in res_txt.text
@@ -958,10 +958,10 @@ class TestTier4RealWorldScenarios:
         srt_content = exp_res.text
 
         # Assert final result integrity
-        assert "Mọi thứ hoạt động trơn tru." in srt_content
-        assert "Everything runs smoothly." in srt_content
-        assert "Đây là câu thứ nhất." in srt_content
-        assert "Và đây là câu thứ hai." in srt_content
+        assert "Mọi thứ hoạt động trơn tru" in srt_content
+        assert "Everything runs smoothly" in srt_content
+        assert "Đây là câu thứ nhất" in srt_content
+        assert "Và đây là câu thứ hai" in srt_content
 
         # Verify cues count is 4
         cue_indices = re.findall(r"^(\d+)$", srt_content, flags=re.MULTILINE)
@@ -994,8 +994,8 @@ class TestTier4RealWorldScenarios:
         assert txt_res.status_code == 200
         txt_content = txt_res.text
 
-        assert "[00:00:00.000 -> 00:00:03.500] Vâng, chúng tôi hoàn toàn đồng ý với ý kiến này." in txt_content
-        assert "[00:00:03.800 -> 00:00:05.500] Điều đó sẽ giúp ích rất nhiều." in txt_content
+        assert "[00:00:00.000 -> 00:00:03.500] Vâng, chúng tôi hoàn toàn đồng ý với ý kiến này" in txt_content
+        assert "[00:00:03.800 -> 00:00:05.500] Điều đó sẽ giúp ích rất nhiều" in txt_content
 
     def test_scenario_video_player_timeline_scrubbing(self, test_client: TestClient, sample_video: Path):
         """Simulate browser HTML5 media player requesting sequential chunks during playback scrubbing."""

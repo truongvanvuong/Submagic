@@ -16,6 +16,7 @@ import {
   Upload,
   Subtitles,
   Sliders,
+  AlertTriangle,
 } from 'lucide-react';
 import type {
   NormalizedBox,
@@ -252,6 +253,36 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
     if (!video) return;
     onTimeUpdate(video.currentTime);
   };
+
+  const handleVideoError = async () => {
+    if (!videoStreamUrl) return;
+    try {
+      const res = await fetch(videoStreamUrl, { method: 'HEAD' });
+      if (res.status === 404) {
+        setVideoError(
+          'Không tìm thấy tệp video trên máy chủ (tệp có thể đã bị xóa hoặc đường dẫn không còn tồn tại).'
+        );
+        return;
+      }
+    } catch {
+      // ignore network errors
+    }
+    setVideoError(
+      'Trình duyệt không hỗ trợ giải mã trực tiếp codec của video này (ví dụ: HEVC/H.265). Bạn vẫn có thể chạy nhận diện giọng nói STT và OCR bình thường!'
+    );
+  };
+
+  // Synchronize external seek requests (e.g. from subtitle click)
+  useEffect(() => {
+    const video = videoElementRef.current;
+    if (!video) return;
+    // Only seek if external currentTime deviates noticeably from video.currentTime (> 0.15s)
+    // This avoids feedback loops during regular playback timeupdate events while ensuring
+    // accurate seeking when clicking subtitle segments at start, middle, or end of video.
+    if (Math.abs((video.currentTime || 0) - currentTime) > 0.15) {
+      video.currentTime = Math.max(0, currentTime);
+    }
+  }, [currentTime, videoElementRef]);
 
   const togglePlayPause = () => {
     const video = videoElementRef.current;
@@ -796,12 +827,12 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
               preload="metadata"
               crossOrigin="anonymous"
               onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleLoadedMetadata}
-              onError={() => {
-                setVideoError(
-                  'Trình duyệt không hỗ trợ giải mã trực tiếp codec của video này (ví dụ: HEVC/H.265). Bạn vẫn có thể chạy nhận diện giọng nói STT và OCR bình thường!'
-                );
+              onLoadedMetadata={() => {
+                setVideoError(null);
+                handleLoadedMetadata();
               }}
+              onCanPlay={() => setVideoError(null)}
+              onError={handleVideoError}
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
               onEnded={() => setIsPlaying(false)}
@@ -865,24 +896,32 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
           </div>
         )}
 
-        {/* Drawing Mask Banner Notification */}
-        {isDrawingMaskMode && (
-          <div className="badge badge-warning text-warning-content absolute top-3 left-1/2 -translate-x-1/2 p-3 font-semibold shadow-md pointer-events-none animate-pulse">
-            Nhấp và kéo trên khung video để vẽ vùng che (Mask)
-          </div>
-        )}
+        {/* Top Notifications Container (kept at the top away from bottom Subtitle ROI area) */}
+        {(isDrawingMaskMode || videoError) && (
+          <div className="absolute top-3 left-4 right-4 z-20 flex flex-col items-center gap-2 pointer-events-none">
+            {/* Drawing Mask Banner Notification */}
+            {isDrawingMaskMode && (
+              <div className="badge badge-warning text-warning-content p-3 font-semibold shadow-md pointer-events-auto animate-pulse">
+                Nhấp và kéo trên khung video để vẽ vùng che (Mask)
+              </div>
+            )}
 
-        {/* Unsupported Codec / Video Playback Error Notice */}
-        {videoError && (
-          <div className="alert alert-warning text-warning-content absolute bottom-4 left-4 right-4 z-20 shadow-lg text-xs py-2 px-3 flex items-center justify-between">
-            <span>{videoError}</span>
-            <button
-              type="button"
-              onClick={() => setVideoError(null)}
-              className="btn btn-ghost btn-xs text-xs font-bold"
-            >
-              Đóng
-            </button>
+            {/* Video Error / Unsupported Codec Notification Banner */}
+            {videoError && (
+              <div className="alert alert-warning text-warning-content shadow-lg text-xs py-2 px-3.5 flex items-center justify-between rounded-lg pointer-events-auto max-w-2xl w-full border border-warning/40">
+                <div className="flex items-center gap-2 overflow-hidden mr-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-warning-content" />
+                  <span className="leading-tight">{videoError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVideoError(null)}
+                  className="btn btn-ghost btn-xs text-xs font-bold shrink-0 hover:bg-black/10"
+                >
+                  Đóng
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1080,13 +1119,18 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
 
                     {/* 2. Cỡ chữ */}
                     <div>
-                      <label className="label-text text-[11px] font-semibold text-base-content/90 block mb-1">
-                        Cỡ chữ
-                      </label>
-                      <div className="join w-full grid grid-cols-3">
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="label-text text-[11px] font-semibold text-base-content/90">
+                          Cỡ chữ (tỷ lệ chiều cao)
+                        </label>
+                        <span className="text-[10px] font-mono text-base-content/60">
+                          {Math.round((subtitleSettings.fontSizeScale ?? 1.0) * 100)}%
+                        </span>
+                      </div>
+                      <div className="join w-full grid grid-cols-3 mb-2">
                         <button
                           type="button"
-                          onClick={() => updateSubtitleSettings({ fontSize: 'small' })}
+                          onClick={() => updateSubtitleSettings({ fontSize: 'small', fontSizeScale: 0.82 })}
                           className={`btn btn-xs join-item ${
                             subtitleSettings.fontSize === 'small'
                               ? 'btn-primary font-bold'
@@ -1097,7 +1141,7 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => updateSubtitleSettings({ fontSize: 'medium' })}
+                          onClick={() => updateSubtitleSettings({ fontSize: 'medium', fontSizeScale: 1.0 })}
                           className={`btn btn-xs join-item ${
                             subtitleSettings.fontSize === 'medium'
                               ? 'btn-primary font-bold'
@@ -1108,7 +1152,7 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => updateSubtitleSettings({ fontSize: 'large' })}
+                          onClick={() => updateSubtitleSettings({ fontSize: 'large', fontSizeScale: 1.25 })}
                           className={`btn btn-xs join-item ${
                             subtitleSettings.fontSize === 'large'
                               ? 'btn-primary font-bold'
@@ -1118,6 +1162,45 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                           Lớn
                         </button>
                       </div>
+                      <input
+                        type="range"
+                        min="0.60"
+                        max="1.50"
+                        step="0.05"
+                        value={subtitleSettings.fontSizeScale ?? 1.0}
+                        onChange={(e) => updateSubtitleSettings({ fontSizeScale: parseFloat(e.target.value) })}
+                        className="range range-xs range-primary w-full"
+                        title="Kéo thanh trượt để tinh chỉnh kích thước chữ"
+                      />
+                    </div>
+
+                    {/* 3. Vị trí theo chiều dọc */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="label-text text-[11px] font-semibold text-base-content/90">
+                          Vị trí trục dọc (Y)
+                        </label>
+                        <span className="text-[10px] font-mono text-base-content/60">
+                          {Math.round((subtitleSettings.positionOffset?.y ?? 0.88) * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0.15"
+                        max="0.95"
+                        step="0.01"
+                        value={subtitleSettings.positionOffset?.y ?? 0.88}
+                        onChange={(e) =>
+                          updateSubtitleSettings({
+                            positionOffset: {
+                              x: subtitleSettings.positionOffset?.x ?? 0.5,
+                              y: parseFloat(e.target.value),
+                            },
+                          })
+                        }
+                        className="range range-xs range-secondary w-full"
+                        title="Kéo để nâng hoặc hạ vị trí phụ đề"
+                      />
                     </div>
                   </div>
                 </div>

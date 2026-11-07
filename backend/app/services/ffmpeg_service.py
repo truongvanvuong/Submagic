@@ -239,13 +239,18 @@ def extract_audio_for_stt(
 def crop_and_mask_roi(
     frame_bgr: np.ndarray,
     roi_config: ROIConfig,
+    pad_top_ratio: float = 0.0,
 ) -> np.ndarray:
     """
     Crop the main ROI from a full BGR frame and paint black rectangles over any
     Exclusion Masks (watermarks/logos) overlapping the ROI.
+    Optionally expands the top edge upward by pad_top_ratio to avoid clipping top diacritics / 2nd line.
     """
     h, w = frame_bgr.shape[:2]
     rx1, ry1, rx2, ry2 = roi_config.main_roi.to_pixel_rect(w, h)
+    if pad_top_ratio > 0.0:
+        pad_h = int((ry2 - ry1) * max(0.0, min(0.35, float(pad_top_ratio))))
+        ry1 = max(0, ry1 - pad_h)
     cropped = frame_bgr[ry1:ry2, rx1:rx2]
 
     if not roi_config.exclusion_masks:
@@ -299,3 +304,159 @@ def extract_frame_jpeg(
         return buf.tobytes()
     finally:
         cap.release()
+
+
+class VideoROIStream:
+    """
+    High-throughput video stream reader yielding sequentially cropped BGR frames (ROI + exclusion masks).
+    Uses FFmpeg CLI rawvideo pipe for hardware/SIMD cropped decoding without full-frame
+    RGB memory allocation, falling back seamlessly to OpenCV VideoCapture.
+    """
+
+    def __init__(
+        self,
+        video_path: str | Path,
+        roi_config: ROIConfig,
+        meta: VideoMetadata | None = None,
+        pad_top_ratio: float = 0.0,
+    ) -> None:
+        self.path = resolve_media_path(video_path)
+        if not self.path.exists():
+            raise FileNotFoundError(f"Video file not found: {self.path}")
+
+        self.roi_config = roi_config
+        self.meta = meta or probe_video(self.path)
+        self.fps = max(1.0, float(self.meta.fps or 25.0))
+        self.video_w = int(self.meta.width or 1280)
+        self.video_h = int(self.meta.height or 720)
+        self.pad_top_ratio = float(pad_top_ratio)
+
+        # Compute ROI bounding rectangle in pixels
+        rx1, ry1, rx2, ry2 = self.roi_config.main_roi.to_pixel_rect(self.video_w, self.video_h)
+        # Allow vertical safety margin (pad upwards by pad_top_ratio to not clip top diacritics / 2nd line)
+        if pad_top_ratio > 0.0:
+            pad_h = int((ry2 - ry1) * max(0.0, min(0.35, float(pad_top_ratio))))
+            ry1 = max(0, ry1 - pad_h)
+        # Ensure even width & height for YUV/BGR codecs in FFmpeg
+        rw = max(16, (rx2 - rx1) & ~1)
+        rh = max(16, (ry2 - ry1) & ~1)
+        self.rx1, self.ry1 = rx1, ry1
+        self.rw, self.rh = rw, rh
+
+        # Precompute exclusion mask boxes relative to the cropped ROI
+        self.ex_rects: list[tuple[int, int, int, int]] = []
+        for em in self.roi_config.exclusion_masks:
+            mx1, my1, mx2, my2 = em.to_pixel_rect(self.video_w, self.video_h)
+            ix1 = max(0, mx1 - rx1)
+            iy1 = max(0, my1 - ry1)
+            ix2 = min(rw, mx2 - rx1)
+            iy2 = min(rh, my2 - ry1)
+            if ix2 > ix1 and iy2 > iy1:
+                self.ex_rects.append((ix1, iy1, ix2, iy2))
+
+        self.proc: subprocess.Popen | None = None
+        self.cap: cv2.VideoCapture | None = None
+        self.frame_idx = 0
+        self.frame_bytes = rw * rh * 3
+
+        # Validate video can be opened (and honor cv2.VideoCapture mocking in unit tests)
+        check_cap = cv2.VideoCapture(str(self.path))
+        if not check_cap.isOpened():
+            raise MediaProcessingError(f"Cannot open video file: {self.path}")
+        check_cap.release()
+
+        # Try initializing FFmpeg pipe first
+        ffmpeg_exe = resolve_ffmpeg_executable()
+        if ffmpeg_exe:
+            cmd = [
+                ffmpeg_exe,
+                "-nostdin",
+                "-i",
+                str(self.path),
+                "-vf",
+                f"crop={rw}:{rh}:{rx1}:{ry1}",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "bgr24",
+                "-loglevel",
+                "error",
+                "-",
+            ]
+            try:
+                self.proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=max(10**6, self.frame_bytes * 10),
+                )
+            except Exception:
+                self.proc = None
+
+        # Fallback to OpenCV if FFmpeg pipe could not be started
+        if self.proc is None:
+            self.cap = cv2.VideoCapture(str(self.path))
+            if not self.cap.isOpened():
+                raise MediaProcessingError(f"Cannot open video file: {self.path}")
+
+    def read_frame(self) -> tuple[int, float, np.ndarray] | None:
+        """
+        Read the next sequential frame.
+        Returns (frame_index, timestamp_sec, cropped_roi_bgr) or None when stream ends.
+        """
+        current_idx = self.frame_idx
+        timestamp_sec = current_idx / self.fps
+
+        if self.proc is not None and self.proc.stdout is not None:
+            raw_bytes = self.proc.stdout.read(self.frame_bytes)
+            if len(raw_bytes) < self.frame_bytes:
+                return None
+            roi = np.frombuffer(raw_bytes, dtype=np.uint8).reshape((self.rh, self.rw, 3))
+            if self.ex_rects:
+                roi = roi.copy()
+                for ix1, iy1, ix2, iy2 in self.ex_rects:
+                    roi[iy1:iy2, ix1:ix2] = 0
+            self.frame_idx += 1
+            return current_idx, timestamp_sec, roi
+
+        if self.cap is not None:
+            ok, full_frame = self.cap.read()
+            if not ok or full_frame is None:
+                return None
+            fh, fw = full_frame.shape[:2]
+            if fw == self.video_w and fh == self.video_h:
+                roi = full_frame[self.ry1 : self.ry1 + self.rh, self.rx1 : self.rx1 + self.rw]
+                if self.ex_rects:
+                    roi = roi.copy()
+                    for ix1, iy1, ix2, iy2 in self.ex_rects:
+                        roi[iy1:iy2, ix1:ix2] = 0
+            else:
+                roi = crop_and_mask_roi(full_frame, self.roi_config, pad_top_ratio=self.pad_top_ratio)
+            self.frame_idx += 1
+            return current_idx, timestamp_sec, roi
+
+        return None
+
+    def close(self) -> None:
+        """Clean up process or video capture resources."""
+        if self.proc is not None:
+            try:
+                if self.proc.stdout:
+                    self.proc.stdout.close()
+                self.proc.terminate()
+                self.proc.wait(timeout=1.0)
+            except Exception:
+                pass
+            self.proc = None
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
+    def __enter__(self) -> VideoROIStream:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()

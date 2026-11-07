@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, Trash2 } from 'lucide-react';
 
 export interface ConfirmModalProps {
@@ -22,11 +23,23 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
   onConfirm,
   onCancel,
 }) => {
-  if (!isOpen) return null;
+  // Close on Escape key
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCancel();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onCancel]);
 
-  return (
-    <div className="modal modal-open bg-black/60 backdrop-blur-xs z-[9998] transition-opacity">
-      <div className="modal-box max-w-sm p-5 bg-base-200 border border-blue_slate-500/30 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-150">
+  if (!isOpen || typeof document === 'undefined') return null;
+
+  const content = (
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-150">
+      <div className="w-full max-w-sm p-5 bg-base-200 border border-blue_slate-500/30 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-150 relative z-10 font-sans">
         <div className="flex items-start gap-3.5">
           <div
             className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
@@ -40,11 +53,11 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
 
           <div className="flex-1 min-w-0">
             <h3 className="font-bold text-sm text-base-content tracking-tight">{title}</h3>
-            <p className="text-xs text-base-content/75 mt-1.5 leading-relaxed">{message}</p>
+            <p className="text-xs text-base-content/75 mt-1.5 leading-relaxed whitespace-pre-line">{message}</p>
           </div>
         </div>
 
-        <div className="modal-action mt-5 pt-3.5 border-t border-blue_slate-500/20 gap-2">
+        <div className="flex items-center justify-end mt-5 pt-3.5 border-t border-blue_slate-500/20 gap-2">
           <button
             type="button"
             onClick={onCancel}
@@ -63,9 +76,11 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
           </button>
         </div>
       </div>
-      <div className="modal-backdrop bg-transparent" onClick={onCancel} />
+      <div className="fixed inset-0 bg-transparent" onClick={onCancel} />
     </div>
   );
+
+  return createPortal(content, document.body);
 };
 
 export default ConfirmModal;

@@ -110,6 +110,18 @@ class DatabaseManager:
 
                 CREATE INDEX IF NOT EXISTS idx_history_created
                     ON extraction_history(created_at DESC);
+
+                CREATE TABLE IF NOT EXISTS translation_cache (
+                    source_text TEXT NOT NULL,
+                    target_lang TEXT NOT NULL,
+                    context_type TEXT NOT NULL,
+                    translated_text TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (source_text, target_lang, context_type)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_trans_cache_lookup
+                    ON translation_cache(target_lang, context_type);
                 """
             )
             await conn.commit()
@@ -863,6 +875,70 @@ class DatabaseManager:
             )
             await conn.commit()
             return cursor.rowcount > 0
+        finally:
+            await conn.close()
+
+    async def get_cached_translations(
+        self,
+        target_lang: str,
+        context_type: str,
+        source_texts: list[str],
+    ) -> dict[str, str]:
+        """Bulk query cached translations for a list of source_texts matching target_lang and context_type."""
+        clean_sources = [s.strip() for s in source_texts if s and s.strip()]
+        if not clean_sources or not target_lang or not context_type:
+            return {}
+
+        # De-duplicate while preserving list
+        unique_sources = list(dict.fromkeys(clean_sources))
+        conn = await self.connect()
+        results: dict[str, str] = {}
+        try:
+            # Query in batches of 200 to adhere to SQLite parameter limits
+            chunk_size = 200
+            for i in range(0, len(unique_sources), chunk_size):
+                chunk = unique_sources[i : i + chunk_size]
+                placeholders = ",".join(["?"] * len(chunk))
+                query = f"""
+                    SELECT source_text, translated_text
+                    FROM translation_cache
+                    WHERE target_lang = ? AND context_type = ? AND source_text IN ({placeholders})
+                """
+                params = [target_lang, context_type, *chunk]
+                cursor = await conn.execute(query, params)
+                rows = await cursor.fetchall()
+                for r in rows:
+                    results[r["source_text"]] = r["translated_text"]
+            return results
+        finally:
+            await conn.close()
+
+    async def save_cached_translations(
+        self,
+        entries: list[tuple[str, str, str, str]],  # (source_text, target_lang, context_type, translated_text)
+    ) -> None:
+        """Bulk upsert translated strings into translation_cache."""
+        clean_entries = [
+            (s.strip(), lang.strip(), ctx.strip(), trans.strip())
+            for s, lang, ctx, trans in entries
+            if s and s.strip() and lang and ctx and trans and trans.strip()
+        ]
+        if not clean_entries:
+            return
+
+        conn = await self.connect()
+        try:
+            await conn.executemany(
+                """
+                INSERT INTO translation_cache (source_text, target_lang, context_type, translated_text)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(source_text, target_lang, context_type) DO UPDATE SET
+                    translated_text = excluded.translated_text,
+                    created_at = datetime('now')
+                """,
+                clean_entries,
+            )
+            await conn.commit()
         finally:
             await conn.close()
 

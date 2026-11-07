@@ -17,7 +17,7 @@ import logging
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
 
@@ -36,7 +36,12 @@ from app.schemas import (
     SubtitleSegmentUpdate,
     WebSocketEvent,
 )
-from app.services.ffmpeg_service import crop_and_mask_roi, probe_video, resolve_media_path
+from app.services.ffmpeg_service import (
+    VideoROIStream,
+    crop_and_mask_roi,
+    probe_video,
+    resolve_media_path,
+)
 from app.services.ocr_engines import (
     clean_ocr_text,
     detect_text_language,
@@ -76,16 +81,22 @@ def extract_text_binary_mask(
     if orig_h < 4 or orig_w < 4:
         return np.zeros((orig_h, orig_w), dtype=np.uint8)
 
-    # Downscale for mask calculation if height > 80 (preserves contours while 4-5x faster)
-    if orig_h > 80:
-        scale = 72.0 / float(orig_h)
+    # Downscale for mask calculation if height > 60 (preserves contours while 4-5x faster)
+    if orig_h > 60:
+        scale = 48.0 / float(orig_h)
         work_w = max(16, int(round(orig_w * scale)))
-        work_gray = cv2.resize(gray, (work_w, 72), interpolation=cv2.INTER_AREA)
+        work_gray = cv2.resize(gray, (work_w, 48), interpolation=cv2.INTER_AREA)
     else:
         work_gray = gray
 
     h, w = work_gray.shape[:2]
     clamped_thresh = max(50, min(254, int(luma_threshold)))
+    relaxed_thresh = max(135, clamped_thresh - 30)
+
+    # Fast early-exit: if there are fewer than 6 bright pixels, no subtitle text can form
+    _, relaxed_bright = cv2.threshold(work_gray, relaxed_thresh, 255, cv2.THRESH_BINARY)
+    if cv2.countNonZero(relaxed_bright) < 6:
+        return np.zeros((orig_h, orig_w), dtype=np.uint8)
 
     # 1. Direct luminance threshold for bright subtitle characters
     _, bright_mask = cv2.threshold(work_gray, clamped_thresh, 255, cv2.THRESH_BINARY)
@@ -106,8 +117,6 @@ def extract_text_binary_mask(
     # Bright pixels must sit near character edges (eliminates interior of large bright background patches)
     stroke_candidates = cv2.bitwise_and(bright_mask, edge_zone)
     tophat_bright = cv2.bitwise_and(bright_mask, tophat_mask)
-    relaxed_thresh = max(135, clamped_thresh - 30)
-    _, relaxed_bright = cv2.threshold(work_gray, relaxed_thresh, 255, cv2.THRESH_BINARY)
     tophat_edges = cv2.bitwise_and(
         cv2.bitwise_and(relaxed_bright, tophat_mask), edge_zone
     )
@@ -142,7 +151,7 @@ def extract_text_binary_mask(
         lut[valid_labels] = 255
         clean_mask = lut[labels]
 
-    if orig_h > 80:
+    if orig_h > 60:
         return cv2.resize(clean_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
     return clean_mask
 
@@ -156,7 +165,7 @@ def has_text_activity(
     """Return True if the binary mask contains plausible subtitle text strokes."""
     if mask is None or mask.size == 0:
         return False
-    nz = int(np.count_nonzero(mask))
+    nz = int(cv2.countNonZero(mask))
     if nz < min_pixels:
         return False
     ratio = nz / float(mask.size)
@@ -167,10 +176,10 @@ def compute_mask_visual_diff(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
     """
     Layer 3 of 3-Layer OpenCV Filter:
     Compute visual dissimilarity in [0.0, 1.0] between two binary text masks.
-    Uses 1-pixel dilated Dice/IoU similarity so minor compression jitter or background
-    anti-aliasing around character borders produces diff near 0.0, whereas actual
-    subtitle text changes produce diff >= `visual_diff_threshold`.
+    Uses fast early-rejection on pixel count followed by 1-pixel dilated Dice similarity.
     """
+    if mask_a is None or mask_b is None:
+        return 1.0
     active_a = has_text_activity(mask_a)
     active_b = has_text_activity(mask_b)
 
@@ -179,35 +188,63 @@ def compute_mask_visual_diff(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
     if active_a != active_b:
         return 1.0
 
+    count_a = cv2.countNonZero(mask_a)
+    count_b = cv2.countNonZero(mask_b)
+    total_fg = count_a + count_b
+    if total_fg == 0:
+        return 0.0
+
+    size_ratio = min(count_a, count_b) / max(count_a, count_b)
+    # Early-exit: If subtitle pixel areas differ by > 35%, they are definitely different text lines
+    if size_ratio < 0.65:
+        return 1.0
+
     if mask_a.shape != mask_b.shape:
         mask_b = cv2.resize(
             mask_b, (mask_a.shape[1], mask_a.shape[0]), interpolation=cv2.INTER_NEAREST
         )
 
-    bin_a = mask_a > 0
-    bin_b = mask_b > 0
+    # Downscale for comparison only if very large (preserves thin strokes while 10x faster)
+    h, w = mask_a.shape[:2]
+    if h > 120:
+        scale = 96.0 / float(h)
+        dw = max(16, int(round(w * scale)))
+        m_a = cv2.resize(mask_a, (dw, 96), interpolation=cv2.INTER_NEAREST)
+        m_b = cv2.resize(mask_b, (dw, 96), interpolation=cv2.INTER_NEAREST)
+    else:
+        m_a, m_b = mask_a, mask_b
 
-    total_fg = int(bin_a.sum()) + int(bin_b.sum())
-    if total_fg == 0:
-        return 0.0
-
-    # 1px dilation tolerance for video compression jitter along text edges
     k3 = np.ones((3, 3), dtype=np.uint8)
-    dil_a = cv2.dilate(mask_a, k3, iterations=1) > 0
-    dil_b = cv2.dilate(mask_b, k3, iterations=1) > 0
-
-    matched_a = int(np.logical_and(bin_a, dil_b).sum())
-    matched_b = int(np.logical_and(bin_b, dil_a).sum())
-    tolerant_dice = (matched_a + matched_b) / float(total_fg)
-
-    # Also check bounding-width / pixel-count ratio so adding/removing a short word is caught
-    count_a = float(bin_a.sum())
-    count_b = float(bin_b.sum())
-    size_ratio = min(count_a, count_b) / max(count_a, count_b)
+    dil_b = cv2.dilate(m_b, k3, iterations=1)
+    overlap = cv2.countNonZero(cv2.bitwise_and(m_a, dil_b))
+    total_m = cv2.countNonZero(m_a) + cv2.countNonZero(m_b)
+    if total_m == 0:
+        return 0.0
+    tolerant_dice = min(1.0, (2.0 * overlap) / float(total_m))
 
     similarity = tolerant_dice * (0.75 + 0.25 * size_ratio)
     diff = 1.0 - max(0.0, min(1.0, similarity))
-    return round(diff, 4)
+
+    # Detect partial word/character changes and geometry shifts on direct cuts
+    dil_a = cv2.dilate(m_a, k3, iterations=1)
+    uncovered_a = cv2.countNonZero(cv2.subtract(m_a, dil_b))
+    uncovered_b = cv2.countNonZero(cv2.subtract(m_b, dil_a))
+    min_count = min(cv2.countNonZero(m_a), cv2.countNonZero(m_b))
+    u_change = (uncovered_a + uncovered_b) / float(max(1, min_count))
+
+    # Horizontal geometry shift (width / right edge difference)
+    pts_a = cv2.findNonZero(m_a)
+    pts_b = cv2.findNonZero(m_b)
+    if pts_a is not None and pts_b is not None:
+        xa, ya, wa, ha = cv2.boundingRect(pts_a)
+        xb, yb, wb, hb = cv2.boundingRect(pts_b)
+        max_w = max(wa, wb, 1)
+        geom_diff = (abs(wa - wb) + abs((xa + wa) - (xb + wb))) / float(max_w * 2)
+    else:
+        geom_diff = 0.0
+
+    total_diff = max(diff, round(u_change + geom_diff, 4))
+    return round(total_diff, 4)
 
 
 def compute_frame_sharpness(
@@ -224,11 +261,20 @@ def compute_frame_sharpness(
         if roi_bgr.ndim == 3
         else roi_bgr
     )
-    lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    if mask is not None and mask.shape == gray.shape and np.count_nonzero(mask) > 0:
-        fg_luma = float(gray[mask > 0].mean())
-        fg_pixels = float(np.count_nonzero(mask))
-        return lap_var + (fg_luma * 2.5) + min(200.0, fg_pixels * 0.05)
+    h, w = gray.shape[:2]
+    if h > 80:
+        scale = 64.0 / float(h)
+        dw = max(16, int(round(w * scale)))
+        small_gray = cv2.resize(gray, (dw, 64), interpolation=cv2.INTER_AREA)
+    else:
+        small_gray = gray
+
+    lap_var = float(cv2.Laplacian(small_gray, cv2.CV_32F).var())
+    if mask is not None and mask.shape == gray.shape:
+        nz = cv2.countNonZero(mask)
+        if nz > 0:
+            fg_luma = float(cv2.mean(gray, mask=mask)[0])
+            return lap_var + (fg_luma * 2.5) + min(200.0, float(nz) * 0.05)
     return lap_var
 
 
@@ -241,6 +287,7 @@ class VisualSubtitleSpan:
     best_mask: np.ndarray
     best_sharpness: float = 0.0
     sampled_frames: int = 1
+    candidate_frames: list[np.ndarray] = field(default_factory=list)
 
 
 class ThreeLayerVisualFilter:
@@ -349,6 +396,8 @@ class ThreeLayerVisualFilter:
                     self._pending_span.best_frame_bgr = roi_bgr.copy()
                     self._pending_span.best_mask = mask
                     self._pending_span.best_sharpness = sharpness
+                if len(self._pending_span.candidate_frames) < 3:
+                    self._pending_span.candidate_frames.append(roi_bgr.copy())
                 self._pending_last_mask = mask
 
                 if self._stable_count >= self.stability_frames:
@@ -377,6 +426,8 @@ class ThreeLayerVisualFilter:
                     self._pending_span.best_frame_bgr = roi_bgr.copy()
                     self._pending_span.best_mask = mask
                     self._pending_span.best_sharpness = sharpness
+                if len(self._pending_span.candidate_frames) < 3:
+                    self._pending_span.candidate_frames.append(roi_bgr.copy())
                 self._pending_last_mask = mask
                 self._stable_count = 0
 
@@ -395,6 +446,8 @@ class ThreeLayerVisualFilter:
                     self._active_span.best_frame_bgr = roi_bgr.copy()
                     self._active_span.best_mask = mask
                     self._active_span.best_sharpness = sharpness
+                if len(self._active_span.candidate_frames) < 3:
+                    self._active_span.candidate_frames.append(roi_bgr.copy())
             else:
                 # Subtitle changed directly to a new line without a blank frame in between
                 self._active_span.end_time = max(
@@ -436,6 +489,7 @@ class ThreeLayerVisualFilter:
             best_mask=mask,
             best_sharpness=sharpness,
             sampled_frames=1,
+            candidate_frames=[roi_bgr.copy()],
         )
         if self.stability_frames == 0:
             self._state = "ACTIVE"
@@ -507,22 +561,62 @@ class FuzzySubtitleDeduplicator:
         gap = max(0.0, candidate.start_time - prev.end_time)
         similarity = compute_ocr_text_similarity(prev.text, candidate.text)
 
-        if similarity >= self.fuzzy_match_threshold and gap <= self.max_merge_gap_sec:
-            prev.start_time = round(min(prev.start_time, candidate.start_time), 3)
-            prev.end_time = round(max(prev.end_time, candidate.end_time), 3)
+        norm_p = normalize_for_fuzzy(prev.text)
+        norm_c = normalize_for_fuzzy(candidate.text)
+        # Short subtitles (<= 4 characters, e.g. Chinese 2-char words) require 100% exact match
+        min_sim = (
+            100.0
+            if (len(norm_p) <= 4 or len(norm_c) <= 4)
+            else self.fuzzy_match_threshold
+        )
 
-            # Pick the text & crop image with higher confidence (or longer text on tie)
-            cand_better = (candidate.confidence > prev.confidence) or (
-                abs(candidate.confidence - prev.confidence) < 1e-4
-                and len(candidate.text) > len(prev.text)
-            )
-            if cand_better:
-                prev.text = candidate.text
-                prev.confidence = round(candidate.confidence, 4)
-                if candidate.crop_image_url:
-                    prev.crop_image_url = candidate.crop_image_url
+        # Gap & threshold check: if gap exceeds max_merge_gap_sec or similarity is low, do not merge
+        if gap > self.max_merge_gap_sec or similarity < min_sim:
+            candidate.index = len(self.segments) + 1
+            self.segments.append(candidate)
+            return candidate, False
 
-            return prev, True
+        # Do not merge distinct subtitle lines that share common prefix/suffix words (e.g. "Cảnh quay thứ nhất" vs "Cảnh quay thứ hai")
+        words_p = norm_p.split()
+        words_c = norm_c.split()
+        if len(words_p) > 1 or len(words_c) > 1:
+            import difflib
+
+            sm = difflib.SequenceMatcher(None, words_p, words_c)
+            for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                if tag == "replace":
+                    for wp, wc in zip(words_p[i1:i2], words_c[j1:j2]):
+                        if wp != wc and fuzz.ratio(wp, wc) < 60.0:
+                            candidate.index = len(self.segments) + 1
+                            self.segments.append(candidate)
+                            return candidate, False
+                    if (i2 - i1) != (j2 - j1):
+                        candidate.index = len(self.segments) + 1
+                        self.segments.append(candidate)
+                        return candidate, False
+                elif tag in ("insert", "delete"):
+                    diff_words = words_c[j1:j2] if tag == "insert" else words_p[i1:i2]
+                    for dw in diff_words:
+                        if len(dw) >= 2:
+                            candidate.index = len(self.segments) + 1
+                            self.segments.append(candidate)
+                            return candidate, False
+
+        prev.start_time = round(min(prev.start_time, candidate.start_time), 3)
+        prev.end_time = round(max(prev.end_time, candidate.end_time), 3)
+
+        # Pick the text & crop image with higher confidence (or longer text on tie)
+        cand_better = (candidate.confidence > prev.confidence) or (
+            abs(candidate.confidence - prev.confidence) < 1e-4
+            and len(candidate.text) > len(prev.text)
+        )
+        if cand_better:
+            prev.text = candidate.text
+            prev.confidence = round(candidate.confidence, 4)
+            if candidate.crop_image_url:
+                prev.crop_image_url = candidate.crop_image_url
+
+        return prev, True
 
         candidate.index = len(self.segments) + 1
         self.segments.append(candidate)
@@ -554,7 +648,7 @@ def save_roi_crop_image(
     project_id: str,
     segment_index: int,
     start_time: float,
-    quality: int = 90,
+    quality: int = 85,
 ) -> str | None:
     """
     Save the cropped ROI BGR frame to `data/crops/<project_id>/` and return its
@@ -564,7 +658,8 @@ def save_roi_crop_image(
         return None
 
     proj_crop_dir = settings.crops_dir / project_id
-    proj_crop_dir.mkdir(parents=True, exist_ok=True)
+    if not proj_crop_dir.exists():
+        proj_crop_dir.mkdir(parents=True, exist_ok=True)
 
     ms_tag = int(round(max(0.0, start_time) * 1000))
     filename = f"ocr_{segment_index:04d}_{ms_tag}ms.jpg"
@@ -658,171 +753,168 @@ async def run_ocr_pipeline(
         )
 
         def _frame_scanner_worker() -> None:
-            """Decode video frames, crop ROI + Exclusion Masks, and run 3-Layer OpenCV Filter with Coarse-to-Fine refinement."""
-            cap = cv2.VideoCapture(str(video_path))
-            if not cap.isOpened():
+            """Decode video frames, crop ROI + Exclusion Masks, and run 3-Layer OpenCV Filter with Ring Buffer refinement."""
+            try:
+                stream = VideoROIStream(
+                    video_path,
+                    req.roi_config,
+                    meta=meta,
+                    pad_top_ratio=req.pad_top_ratio,
+                )
+            except Exception as err:
                 loop.call_soon_threadsafe(
                     span_queue.put_nowait,
                     {
                         "type": "error",
-                        "error": RuntimeError(f"Không thể mở video: {video_path}"),
+                        "error": RuntimeError(f"Không thể mở video: {video_path}: {err}"),
                     },
                 )
                 loop.call_soon_threadsafe(span_queue.put_nowait, None)
                 return
 
             try:
-                video_w = int(meta.width or 1280)
-                video_h = int(meta.height or 720)
-                rx1, ry1, rx2, ry2 = req.roi_config.main_roi.to_pixel_rect(video_w, video_h)
-                ex_rects: list[tuple[int, int, int, int]] = []
-                for em in req.roi_config.exclusion_masks:
-                    mx1, my1, mx2, my2 = em.to_pixel_rect(video_w, video_h)
-                    ix1 = max(0, mx1 - rx1)
-                    iy1 = max(0, my1 - ry1)
-                    ix2 = min(rx2 - rx1, mx2 - rx1)
-                    iy2 = min(ry2 - ry1, my2 - ry1)
-                    if ix2 > ix1 and iy2 > iy1:
-                        ex_rects.append((ix1, iy1, ix2, iy2))
-
-                def _fast_crop(frame: np.ndarray) -> np.ndarray:
-                    fh, fw = frame.shape[:2]
-                    if fw == video_w and fh == video_h:
-                        cropped = frame[ry1:ry2, rx1:rx2]
-                        if ex_rects:
-                            cropped = cropped.copy()
-                            for e_x1, e_y1, e_x2, e_y2 in ex_rects:
-                                cropped[e_y1:e_y2, e_x1:e_x2] = 0
-                        return cropped
-                    return crop_and_mask_roi(frame, req.roi_config)
-
-                frame_idx = 0
                 last_progress_report = 0.0
                 prev_coarse_idx: int | None = None
                 prev_had_text: bool = False
                 prev_coarse_mask: np.ndarray | None = None
 
+                # In-memory sliding buffer of intermediate frames (f_idx, roi_bgr) between coarse steps
+                # Completely eliminates cap.set() seeking overhead!
+                window_buffer: list[tuple[int, np.ndarray]] = []
+
                 while not cancel_ev.is_set():
-                    if frame_step > 1 and frame_idx % frame_step != 0:
-                        if not cap.grab():
-                            break
-                        frame_idx += 1
+                    frame_item = stream.read_frame()
+                    if frame_item is None:
+                        break
+                    f_idx, timestamp_sec, roi_bgr = frame_item
+
+                    # Buffer intermediate frames for instant zero-seek boundary refinement
+                    if frame_step > 1 and f_idx % frame_step != 0:
+                        window_buffer.append((f_idx, roi_bgr))
                         continue
 
-                    ok, frame_bgr = cap.read()
-                    if not ok or frame_bgr is None:
-                        break
-
-                    timestamp_sec = frame_idx / video_fps
-                    roi_bgr = _fast_crop(frame_bgr)
                     curr_mask = extract_text_binary_mask(roi_bgr, luma_threshold=req.luma_threshold)
                     curr_has_text = has_text_activity(curr_mask)
+                    pct = min(95.0, 5.0 + (timestamp_sec / duration_sec) * 88.0)
 
                     refined_start_time: float | None = None
                     refined_end_time: float | None = None
 
-                    # Coarse-to-fine boundary refinement on state transitions when frame_step > 1
-                    if frame_step > 1 and prev_coarse_idx is not None:
-                        start_win = prev_coarse_idx + 1
-                        end_win = frame_idx - 1
+                    # Zero-seek in-memory boundary refinement on state transitions
+                    if frame_step > 1 and prev_coarse_idx is not None and window_buffer:
+                        is_cut = (
+                            prev_had_text
+                            and curr_has_text
+                            and prev_coarse_mask is not None
+                            and compute_mask_visual_diff(prev_coarse_mask, curr_mask)
+                            >= req.visual_diff_threshold
+                        )
+                        need_refine = (
+                            (not prev_had_text and curr_has_text)
+                            or (prev_had_text and not curr_has_text)
+                            or is_cut
+                        )
 
-                        if end_win >= start_win:
-                            is_cut = (
-                                prev_had_text
-                                and curr_has_text
-                                and prev_coarse_mask is not None
-                                and compute_mask_visual_diff(prev_coarse_mask, curr_mask)
-                                >= req.visual_diff_threshold
-                            )
-                            need_refine = (
-                                (not prev_had_text and curr_has_text)
-                                or (prev_had_text and not curr_has_text)
-                                or is_cut
-                            )
+                        if need_refine:
+                            # 1. Text appearance: blank -> text (binary search on in-memory window_buffer)
+                            if not prev_had_text and curr_has_text:
+                                low, high = 0, len(window_buffer) - 1
+                                ans_offset = len(window_buffer)
+                                while low <= high:
+                                    mid = (low + high) // 2
+                                    m_mid = extract_text_binary_mask(
+                                        window_buffer[mid][1],
+                                        luma_threshold=req.luma_threshold,
+                                    )
+                                    if has_text_activity(m_mid):
+                                        ans_offset = mid
+                                        high = mid - 1
+                                    else:
+                                        low = mid + 1
+                                found_idx = (
+                                    window_buffer[ans_offset][0]
+                                    if ans_offset < len(window_buffer)
+                                    else f_idx
+                                )
+                                refined_start_time = round(found_idx / video_fps, 3)
 
-                            if need_refine:
-                                try:
-                                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_win)
-                                    window_rois: list[np.ndarray] = []
-                                    for _ in range(start_win, frame_idx):
-                                        ok_p, f_p = cap.read()
-                                        if not ok_p or f_p is None:
-                                            break
-                                        window_rois.append(_fast_crop(f_p))
-                                    cap.grab()  # Advance past frame_idx (already processed)
+                            # 2. Text disappearance: text -> blank (binary search on in-memory window_buffer)
+                            elif prev_had_text and not curr_has_text:
+                                low, high = 0, len(window_buffer) - 1
+                                ans_offset = -1
+                                while low <= high:
+                                    mid = (low + high) // 2
+                                    m_mid = extract_text_binary_mask(
+                                        window_buffer[mid][1],
+                                        luma_threshold=req.luma_threshold,
+                                    )
+                                    if has_text_activity(m_mid):
+                                        ans_offset = mid
+                                        low = mid + 1
+                                    else:
+                                        high = mid - 1
+                                last_text_idx = (
+                                    window_buffer[ans_offset][0]
+                                    if ans_offset >= 0
+                                    else prev_coarse_idx
+                                )
+                                refined_end_time = round(
+                                    (last_text_idx + 1) / video_fps, 3
+                                )
 
-                                    if window_rois:
-                                        # 1. Text appearance: blank -> text (binary search for first frame with text)
-                                        if not prev_had_text and curr_has_text:
-                                            low, high = 0, len(window_rois) - 1
-                                            ans_offset = len(window_rois)
-                                            while low <= high:
-                                                mid = (low + high) // 2
-                                                m_mid = extract_text_binary_mask(
-                                                    window_rois[mid],
-                                                    luma_threshold=req.luma_threshold,
-                                                )
-                                                if has_text_activity(m_mid):
-                                                    ans_offset = mid
-                                                    high = mid - 1
-                                                else:
-                                                    low = mid + 1
-                                            found_idx = start_win + ans_offset
-                                            refined_start_time = round(found_idx / video_fps, 3)
+                            # 3. Direct cut between subtitle lines
+                            elif is_cut:
+                                assert prev_coarse_mask is not None
+                                low, high = 0, len(window_buffer) - 1
+                                ans_offset = len(window_buffer)
+                                while low <= high:
+                                    mid = (low + high) // 2
+                                    m_mid = extract_text_binary_mask(
+                                        window_buffer[mid][1],
+                                        luma_threshold=req.luma_threshold,
+                                    )
+                                    if (
+                                        not has_text_activity(m_mid)
+                                        or compute_mask_visual_diff(
+                                            prev_coarse_mask, m_mid
+                                        )
+                                        >= req.visual_diff_threshold
+                                    ):
+                                        ans_offset = mid
+                                        high = mid - 1
+                                    else:
+                                        low = mid + 1
+                                cut_idx = (
+                                    window_buffer[ans_offset][0]
+                                    if ans_offset < len(window_buffer)
+                                    else f_idx
+                                )
+                                cut_t = round(cut_idx / video_fps, 3)
+                                refined_end_time = cut_t
+                                refined_start_time = cut_t
 
-                                        # 2. Text disappearance: text -> blank (binary search for last frame with text)
-                                        elif prev_had_text and not curr_has_text:
-                                            low, high = 0, len(window_rois) - 1
-                                            ans_offset = -1
-                                            while low <= high:
-                                                mid = (low + high) // 2
-                                                m_mid = extract_text_binary_mask(
-                                                    window_rois[mid],
-                                                    luma_threshold=req.luma_threshold,
-                                                )
-                                                if has_text_activity(m_mid):
-                                                    ans_offset = mid
-                                                    low = mid + 1
-                                                else:
-                                                    high = mid - 1
-                                            last_text_idx = (
-                                                (start_win + ans_offset)
-                                                if ans_offset >= 0
-                                                else prev_coarse_idx
-                                            )
-                                            refined_end_time = round(
-                                                (last_text_idx + 1) / video_fps, 3
-                                            )
+                        elif not prev_had_text and not curr_has_text:
+                            # Detect short sub-second subtitles that appeared and disappeared within intermediate buffer
+                            sub_found_start = None
+                            sub_found_end = None
+                            for w_i, (wb_idx, wb_roi) in enumerate(window_buffer):
+                                m_wb = extract_text_binary_mask(wb_roi, luma_threshold=req.luma_threshold)
+                                if has_text_activity(m_wb):
+                                    if sub_found_start is None:
+                                        sub_found_start = w_i
+                                    sub_found_end = w_i
+                            if sub_found_start is not None and sub_found_end is not None:
+                                for w_i in range(sub_found_start, sub_found_end + 1):
+                                    wb_idx, wb_roi = window_buffer[w_i]
+                                    wb_t = round(wb_idx / video_fps, 3)
+                                    m_wb = extract_text_binary_mask(wb_roi, luma_threshold=req.luma_threshold)
+                                    int_spans = visual_filter.process_frame(wb_roi, wb_t, precomputed_mask=m_wb)
+                                    for sp in int_spans:
+                                        loop.call_soon_threadsafe(span_queue.put_nowait, (sp, pct))
+                                for sp in visual_filter.flush():
+                                    loop.call_soon_threadsafe(span_queue.put_nowait, (sp, pct))
 
-                                        # 3. Direct cut between subtitle lines (binary search for first frame differing from prev text)
-                                        elif is_cut:
-                                            assert prev_coarse_mask is not None
-                                            low, high = 0, len(window_rois) - 1
-                                            ans_offset = len(window_rois)
-                                            while low <= high:
-                                                mid = (low + high) // 2
-                                                m_mid = extract_text_binary_mask(
-                                                    window_rois[mid],
-                                                    luma_threshold=req.luma_threshold,
-                                                )
-                                                if (
-                                                    not has_text_activity(m_mid)
-                                                    or compute_mask_visual_diff(
-                                                        prev_coarse_mask, m_mid
-                                                    )
-                                                    >= req.visual_diff_threshold
-                                                ):
-                                                    ans_offset = mid
-                                                    high = mid - 1
-                                                else:
-                                                    low = mid + 1
-                                            cut_idx = start_win + ans_offset
-                                            cut_t = round(cut_idx / video_fps, 3)
-                                            refined_end_time = cut_t
-                                            refined_start_time = cut_t
-                                except Exception as e_refine:
-                                    logger.debug("Refine error: %s", e_refine)
-                                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx + 1)
+                    window_buffer.clear()
 
                     completed_spans = visual_filter.process_frame(
                         roi_bgr, timestamp_sec, precomputed_mask=curr_mask
@@ -838,11 +930,10 @@ async def run_ocr_pipeline(
                         for sp in completed_spans:
                             sp.end_time = max(round(sp.start_time + 0.05, 3), refined_end_time)
 
-                    pct = min(95.0, 5.0 + (timestamp_sec / duration_sec) * 88.0)
                     for sp in completed_spans:
                         loop.call_soon_threadsafe(span_queue.put_nowait, (sp, pct))
 
-                    prev_coarse_idx = frame_idx
+                    prev_coarse_idx = f_idx
                     prev_had_text = curr_has_text
                     prev_coarse_mask = curr_mask
 
@@ -861,8 +952,6 @@ async def run_ocr_pipeline(
                             },
                         )
 
-                    frame_idx += 1
-
                 if not cancel_ev.is_set():
                     for sp in visual_filter.flush():
                         loop.call_soon_threadsafe(span_queue.put_nowait, (sp, 95.0))
@@ -874,10 +963,14 @@ async def run_ocr_pipeline(
                 )
                 loop.call_soon_threadsafe(span_queue.put_nowait, None)
             finally:
-                cap.release()
+                stream.close()
 
         scanner_task = asyncio.create_task(asyncio.to_thread(_frame_scanner_worker))
         raw_crop_counter = 1
+        total_ocr_invocations = 0
+        filtered_empty_count = 0
+        filtered_low_confidence_count = 0
+        merged_duplicates_count = 0
 
         try:
             stream_done = False
@@ -919,6 +1012,7 @@ async def run_ocr_pipeline(
                         batch_spans.append(queued_item)
 
                 if resolved_engine == "gemini" and len(batch_spans) > 1:
+                    total_ocr_invocations += len(batch_spans)
                     ocr_results = await asyncio.to_thread(
                         ocr_engine_cache.recognize_gemini_batch,
                         [sp.best_frame_bgr for sp, _ in batch_spans],
@@ -926,7 +1020,8 @@ async def run_ocr_pipeline(
                         req.gemini_api_key,
                     )
                 else:
-                    raw_bgr = batch_spans[0][0].best_frame_bgr
+                    span_obj = batch_spans[0][0]
+                    raw_bgr = span_obj.best_frame_bgr
                     # Downscale only excessively high-resolution crops (e.g. 4K/2K) to preserve contour detail
                     if raw_bgr is not None and raw_bgr.shape[0] > 160:
                         scale = 120.0 / float(raw_bgr.shape[0])
@@ -935,6 +1030,7 @@ async def run_ocr_pipeline(
                     else:
                         target_bgr = raw_bgr
 
+                    total_ocr_invocations += 1
                     single_res = await asyncio.to_thread(
                         ocr_engine_cache.recognize_frame,
                         target_bgr,
@@ -942,6 +1038,23 @@ async def run_ocr_pipeline(
                         req.language,
                         req.gemini_api_key,
                     )
+
+                    # Multi-frame candidate voting: if recognition is weak or empty, evaluate alternative candidate frames
+                    if (single_res.confidence < 0.70 or not single_res.text) and len(span_obj.candidate_frames) > 1:
+                        for alt_cand in span_obj.candidate_frames[1:3]:
+                            total_ocr_invocations += 1
+                            res_alt = await asyncio.to_thread(
+                                ocr_engine_cache.recognize_frame,
+                                alt_cand,
+                                resolved_engine,
+                                req.language,
+                                req.gemini_api_key,
+                            )
+                            if res_alt.text and (not single_res.text or res_alt.confidence > single_res.confidence):
+                                single_res = res_alt
+                                if single_res.confidence >= 0.75:
+                                    break
+
                     ocr_results = [single_res]
 
                 for (span, pct), ocr_res in zip(batch_spans, ocr_results):
@@ -949,6 +1062,14 @@ async def run_ocr_pipeline(
                         break
                     cleaned_text = clean_ocr_text(ocr_res.text)
                     if not cleaned_text:
+                        if ocr_res.lines:
+                            filtered_low_confidence_count += 1
+                            if req.diagnostic_logging:
+                                logger.info("[OCR DIAG] Frame at %.2fs: filtered out (low confidence below threshold)", span.start_time)
+                        else:
+                            filtered_empty_count += 1
+                            if req.diagnostic_logging:
+                                logger.info("[OCR DIAG] Frame at %.2fs: filtered out (empty/no text detected)", span.start_time)
                         continue
 
                     crop_url: str | None = None
@@ -981,6 +1102,15 @@ async def run_ocr_pipeline(
                     )
 
                     if was_merged and active_seg.id:
+                        merged_duplicates_count += 1
+                        if req.diagnostic_logging:
+                            logger.info(
+                                "[OCR DIAG] Segment at %.2fs: merged duplicate into [%.2fs -> %.2fs] '%s'",
+                                candidate_seg.start_time,
+                                active_seg.start_time,
+                                active_seg.end_time,
+                                active_seg.text,
+                            )
                         await db.update_segment(
                             req.project_id,
                             active_seg.id,
@@ -1069,6 +1199,18 @@ async def run_ocr_pipeline(
         except Exception as hist_err:
             logger.warning("Could not add extraction history record: %s", hist_err)
 
+        diag_stats = {
+            "total_frames_sampled": visual_filter.total_frames_sampled,
+            "frames_with_text": visual_filter.frames_with_text,
+            "ocr_invocations": total_ocr_invocations,
+            "filtered_low_confidence": filtered_low_confidence_count,
+            "filtered_empty_or_short": filtered_empty_count,
+            "merged_duplicates": merged_duplicates_count,
+            "retained_segments": len(deduplicator.segments),
+        }
+        if req.diagnostic_logging:
+            logger.info("[OCR DIAGNOSTICS] Project %s summary: %s", req.project_id, diag_stats)
+
         await emit(
             WebSocketEvent(
                 event="job_completed",
@@ -1088,6 +1230,7 @@ async def run_ocr_pipeline(
                     "frames_skipped_by_layer3": visual_filter.frames_skipped_by_layer3,
                     "engine": resolved_engine,
                     "detected_language": det_lang,
+                    "diagnostic_stats": diag_stats,
                 },
             )
         )

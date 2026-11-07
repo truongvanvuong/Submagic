@@ -25,6 +25,7 @@ class ExportFormat(str, Enum):
     SRT = "srt"
     VTT = "vtt"
     TXT = "txt"
+    ASS = "ass"
 
 
 class BilingualLayout(str, Enum):
@@ -163,7 +164,15 @@ class OCRJobRequest(BaseModel):
     fuzzy_match_threshold: float = Field(default=85.0, ge=50.0, le=100.0)
     max_merge_gap_sec: float = Field(default=0.20, ge=0.0, le=2.0)
     save_crop_images: bool = True
+    diagnostic_logging: bool = False
+    pad_top_ratio: float = Field(default=0.10, ge=0.0, le=0.50)
     gemini_api_key: str | None = None
+
+
+class TranslationContext(str, Enum):
+    CASUAL = "casual"          # Đời thường (khẩu ngữ tự nhiên, xưng hô gần gũi)
+    HISTORICAL = "historical"  # Cổ trang (ta/ngươi/huynh/muội, Hán-Việt, trang trọng)
+    MODERN = "modern"          # Hiện đại (tôi/bạn/anh/em, câu gãy gọn, công sở)
 
 
 class LLMJobRequest(BaseModel):
@@ -173,12 +182,38 @@ class LLMJobRequest(BaseModel):
         default=None,
         description="Target language for bilingual translation (e.g., 'vi', 'en', 'zh', 'ja', 'ko')",
     )
-    batch_size: int = Field(default=60, ge=1, le=100)
+    translation_context: TranslationContext = Field(
+        default=TranslationContext.CASUAL,
+        description="Ngữ cảnh dịch thuật: 'casual' (Đời thường), 'historical' (Cổ trang), 'modern' (Hiện đại)",
+    )
+    force_retranslate: bool = Field(
+        default=False,
+        description="Nếu True, dịch lại toàn bộ ngay cả những dòng đã có bản dịch trước đó.",
+    )
+    batch_size: int = Field(default=50, ge=1, le=100)
     gemini_api_key: str | None = None
     model: str | None = Field(
         default=None,
         description="Optional Gemini model override (e.g., 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash')",
     )
+
+
+class LLMEstimateRequest(BaseModel):
+    project_id: str
+    translate_to: str | None = "vi"
+    translation_context: TranslationContext = TranslationContext.CASUAL
+    fix_ocr_spelling: bool = False
+    force_retranslate: bool = False
+
+
+class LLMEstimateResponse(BaseModel):
+    total_segments: int
+    cached_segments: int
+    segments_to_translate: int
+    estimated_prompt_tokens: int
+    estimated_completion_tokens: int
+    estimated_total_tokens: int
+    estimated_cost_usd: float
 
 
 
