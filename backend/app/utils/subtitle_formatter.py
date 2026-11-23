@@ -4,7 +4,8 @@ from __future__ import annotations
 import re
 import textwrap
 
-from app.schemas import BilingualLayout, ExportFormat, SubtitleSegment
+from app.schemas import BilingualLayout, ExportFormat, ScriptVariant, SubtitleSegment
+from app.utils.cjk_normalizer import convert_s2t, convert_t2s
 
 KNOWN_ABBREVIATIONS = {
     "mr.", "mrs.", "ms.", "dr.", "prof.", "sr.", "jr.",
@@ -138,8 +139,16 @@ def _resolve_segment_text(
     layout: BilingualLayout,
     wrap_lines: bool = False,
     max_chars: int = 42,
+    script_variant: str | ScriptVariant = ScriptVariant.ORIGINAL,
 ) -> str:
-    orig = remove_trailing_period(clean_subtitle_text(seg.text or ""))
+    raw_orig = seg.text or seg.original_text or ""
+    var_str = script_variant.value if isinstance(script_variant, ScriptVariant) else str(script_variant).lower()
+    if var_str == "simplified":
+        raw_orig = seg.normalized_text if (seg.normalized_text and seg.text == seg.original_text) else convert_t2s(raw_orig)
+    elif var_str == "traditional":
+        raw_orig = convert_s2t(raw_orig)
+
+    orig = remove_trailing_period(clean_subtitle_text(raw_orig))
     trans = remove_trailing_period(clean_subtitle_text(seg.translated_text or ""))
 
     if layout == BilingualLayout.TRANSLATED_ONLY:
@@ -180,6 +189,7 @@ def format_subtitles(
     max_chars_per_line: int = 42,
     video_width: int = 1280,
     video_height: int = 720,
+    script_variant: str | ScriptVariant = ScriptVariant.ORIGINAL,
 ) -> str:
     """Render subtitle segments into .srt, .vtt, .txt, or .ass string with resolution-proportional font scaling."""
     sorted_segs = sorted(segments, key=lambda s: (s.start_time, s.index))
@@ -188,7 +198,11 @@ def format_subtitles(
         blocks: list[str] = []
         for idx, seg in enumerate(sorted_segs, start=1):
             body = _resolve_segment_text(
-                seg, bilingual_layout, wrap_lines=wrap_lines, max_chars=max_chars_per_line
+                seg,
+                bilingual_layout,
+                wrap_lines=wrap_lines,
+                max_chars=max_chars_per_line,
+                script_variant=script_variant,
             )
             if not body:
                 continue
@@ -201,7 +215,11 @@ def format_subtitles(
         blocks = ["WEBVTT", ""]
         for idx, seg in enumerate(sorted_segs, start=1):
             body = _resolve_segment_text(
-                seg, bilingual_layout, wrap_lines=wrap_lines, max_chars=max_chars_per_line
+                seg,
+                bilingual_layout,
+                wrap_lines=wrap_lines,
+                max_chars=max_chars_per_line,
+                script_variant=script_variant,
             )
             if not body:
                 continue
@@ -235,7 +253,11 @@ def format_subtitles(
         events = []
         for seg in sorted_segs:
             body = _resolve_segment_text(
-                seg, bilingual_layout, wrap_lines=wrap_lines, max_chars=max_chars_per_line
+                seg,
+                bilingual_layout,
+                wrap_lines=wrap_lines,
+                max_chars=max_chars_per_line,
+                script_variant=script_variant,
             )
             if not body:
                 continue
@@ -249,7 +271,11 @@ def format_subtitles(
     lines: list[str] = []
     for seg in sorted_segs:
         body = _resolve_segment_text(
-            seg, bilingual_layout, wrap_lines=wrap_lines, max_chars=max_chars_per_line
+            seg,
+            bilingual_layout,
+            wrap_lines=wrap_lines,
+            max_chars=max_chars_per_line,
+            script_variant=script_variant,
         )
         if not body:
             continue

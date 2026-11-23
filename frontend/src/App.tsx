@@ -112,9 +112,10 @@ export const App: React.FC = () => {
   const [jobStatusText, setJobStatusText] = useState<string>('Sẵn sàng');
   const [logs, setLogs] = useState<LogEntry[]>([]);
 
-  // Modals
+  // Modals & Collapsible Config Panel State
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [isNewProjectModalOpen, setIsNewProjectModalOpen] = useState<boolean>(false);
+  const [isConfigOpen, setIsConfigOpen] = useState<boolean>(false);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgress, setUploadProgress] = useState<number>(0);
 
@@ -152,19 +153,22 @@ export const App: React.FC = () => {
     }
   }, []);
 
-  // Show Toast with support for collapsible details
+  // Show Toast with support for collapsible details and tiered notification level:
+  // Only trigger Windows / Browser System Notification when notifyOS === true
+  // (specifically for video upload completion and subtitle extraction completion).
   const showToast = useCallback((
     type: 'success' | 'info' | 'warning' | 'error',
     title: string,
     message?: string,
     duration = 4500,
-    details?: string[]
+    details?: string[],
+    notifyOS = false
   ) => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
     setToasts((prev) => [...prev, { id, type, title, message, duration, details }]);
 
-    // Trigger System / Browser Notification (displays on OS even if user is on another tab or app)
-    if (typeof window !== 'undefined' && 'Notification' in window) {
+    // Trigger System / Browser Notification ONLY when notifyOS is explicitly true
+    if (notifyOS && typeof window !== 'undefined' && 'Notification' in window) {
       if (Notification.permission === 'granted') {
         try {
           const notif = new Notification(title, {
@@ -244,15 +248,25 @@ export const App: React.FC = () => {
     try {
       const detail = await getProject(projectId);
       setActiveProject(detail);
-      setSegments(detail.segments || []);
+      const loadedSegments = detail.segments || [];
+      setSegments(loadedSegments);
       if (detail.roi_config) {
         setRoiConfig(detail.roi_config);
       }
       setJobStatus(detail.status);
       setJobProgress(detail.progress);
       setIsProcessing(detail.status === 'running' || detail.status === 'queued');
+      setJobStatusText(
+        detail.status === 'completed'
+          ? `Hoàn tất (${loadedSegments.length} dòng phụ đề)`
+          : detail.status === 'running'
+          ? 'Đang xử lý...'
+          : 'Sẵn sàng'
+      );
+      // Nếu dự án chưa có phụ đề nào, mở sẵn bảng cấu hình để người dùng trích xuất ngay
+      setIsConfigOpen(loadedSegments.length === 0);
 
-      appendLog(`Đã tải dự án: "${detail.name}" (${detail.segments?.length || 0} câu phụ đề).`, 'info');
+      appendLog(`Đã tải dự án: "${detail.name}" (${loadedSegments.length} câu phụ đề).`, 'info');
     } catch (err: any) {
       console.error(`Failed to load project ${projectId}:`, err);
       appendLog(`Lỗi tải dự án: ${err.message}`, 'error');
@@ -288,6 +302,12 @@ export const App: React.FC = () => {
       setJobProgress(0);
       setJobStatusText('Bắt đầu xử lý...');
       appendLog(`Bắt đầu tác vụ ${event.job_id || ''}`, 'info');
+    });
+
+    client.on('warning', (event: WebSocketEvent) => {
+      const warnMsg = event.message || 'Cảnh báo xử lý phụ đề';
+      appendLog(`[CẢNH BÁO] ${warnMsg}`, 'warning');
+      showToast('warning', 'Cảnh báo OCR', warnMsg);
     });
 
     client.on('job_progress', (event: WebSocketEvent) => {
@@ -340,7 +360,14 @@ export const App: React.FC = () => {
       setJobProgress(100);
       setJobStatusText('Xử lý hoàn tất 100%!');
       appendLog(`Tác vụ hoàn thành xuất sắc! ${event.message || ''}`, 'success');
-      showToast('success', 'Trích xuất phụ đề thành công!', event.message || 'Tác vụ đã hoàn tất 100%. Phụ đề đã sẵn sàng và được lưu vào lịch sử.');
+      showToast(
+        'success',
+        'Trích xuất phụ đề thành công!',
+        event.message || 'Tác vụ đã hoàn tất 100%. Phụ đề đã sẵn sàng và được lưu vào lịch sử.',
+        4500,
+        undefined,
+        true
+      );
 
       // Refresh project & history (Req 5)
       loadProjectDetails(activeProject.id);
@@ -442,10 +469,18 @@ export const App: React.FC = () => {
       setActiveProject(created);
       setSegments(created.segments || []);
       if (created.roi_config) setRoiConfig(created.roi_config);
+      setIsConfigOpen(true);
 
       appendLog(`Tải lên thành công 100%! Tạo dự án "${created.name}".`, 'success');
       setJobStatusText('Sẵn sàng');
-      showToast('success', 'Tải video lên thành công!', `Video "${created.name}" đã sẵn sàng để trích xuất phụ đề.`);
+      showToast(
+        'success',
+        'Tải video lên thành công!',
+        `Video "${created.name}" đã sẵn sàng để trích xuất phụ đề.`,
+        4500,
+        undefined,
+        true
+      );
     } catch (err: any) {
       console.error('Upload failed:', err);
       appendLog(`Tải lên thất bại: ${err.message}`, 'error');
@@ -474,6 +509,7 @@ export const App: React.FC = () => {
       setActiveProject(created);
       setSegments(created.segments || []);
       if (created.roi_config) setRoiConfig(created.roi_config);
+      setIsConfigOpen(true);
       setIsNewProjectModalOpen(false);
       setNewProjectName('');
       setNewVideoPath('');
@@ -566,16 +602,24 @@ export const App: React.FC = () => {
     }
   };
 
-  // 8. Subtitle Segment Operations
-  const handleUpdateSegment = async (segmentId: string, update: SubtitleSegmentUpdate) => {
+  // 8. Subtitle Segment Operations (In-page toast only, notifyOS = false)
+  const handleUpdateSegment = async (
+    segmentId: string,
+    update: SubtitleSegmentUpdate,
+    notifyToast = false
+  ) => {
     if (!activeProject) return;
     try {
       const updated = await updateSegment(activeProject.id, segmentId, update);
       setSegments((prev) =>
         prev.map((s) => (s.id === segmentId ? { ...s, ...updated } : s))
       );
+      if (notifyToast) {
+        showToast('info', 'Đã lưu chỉnh sửa', 'Đã cập nhật nội dung dòng phụ đề.', 2200);
+      }
     } catch (err: any) {
       appendLog(`Lỗi cập nhật phụ đề: ${err.message}`, 'error');
+      showToast('error', 'Lỗi cập nhật phụ đề', err.message, 3500);
     }
   };
 
@@ -585,8 +629,10 @@ export const App: React.FC = () => {
       await deleteSegment(activeProject.id, segmentId);
       setSegments((prev) => prev.filter((s) => s.id !== segmentId));
       appendLog('Đã xóa câu phụ đề.', 'info');
+      showToast('info', 'Đã xóa phụ đề', 'Câu phụ đề đã được xóa khỏi danh sách.', 2500);
     } catch (err: any) {
       appendLog(`Lỗi xóa phụ đề: ${err.message}`, 'error');
+      showToast('error', 'Lỗi xóa phụ đề', err.message, 3500);
     }
   };
 
@@ -601,8 +647,10 @@ export const App: React.FC = () => {
         return updated;
       });
       appendLog('Đã gộp 2 câu phụ đề thành công.', 'success');
+      showToast('success', 'Đã gộp phụ đề', 'Đã gộp 2 câu phụ đề thành công.', 2500);
     } catch (err: any) {
       appendLog(`Lỗi gộp phụ đề: ${err.message}`, 'error');
+      showToast('error', 'Lỗi gộp phụ đề', err.message, 3500);
     }
   };
 
@@ -634,8 +682,10 @@ export const App: React.FC = () => {
         return copy;
       });
       appendLog('Đã tách câu phụ đề làm 2 thành công.', 'success');
+      showToast('success', 'Đã tách phụ đề', 'Đã tách câu phụ đề làm 2 đoạn.', 2500);
     } catch (err: any) {
       appendLog(`Lỗi tách phụ đề: ${err.message}`, 'error');
+      showToast('error', 'Lỗi tách phụ đề', err.message, 3500);
     }
   };
 
@@ -653,16 +703,30 @@ export const App: React.FC = () => {
         return updated;
       });
       appendLog('Đã thêm một câu phụ đề mới.', 'info');
+      showToast('success', 'Đã thêm phụ đề', 'Đã thêm một dòng phụ đề mới.', 2500);
+      return newSeg;
     } catch (err: any) {
       appendLog(`Lỗi thêm phụ đề: ${err.message}`, 'error');
+      showToast('error', 'Lỗi thêm phụ đề', err.message, 3500);
     }
   };
 
-  const handleAIPolishClick = () => {
+  const handleAIPolishClick = (targetLang?: string, context?: TranslationContext) => {
     if (!activeProject) return;
     let savedKey: string | undefined = undefined;
+    let savedLang = targetLang;
+    let savedContext = context;
     try {
       savedKey = localStorage.getItem('gemini_api_key') || undefined;
+      if (!savedLang) {
+        savedLang = localStorage.getItem('submagic_translate_target_lang') || 'vi';
+      }
+      if (!savedContext) {
+        const rawCtx = localStorage.getItem('submagic_translation_context');
+        if (rawCtx === 'historical' || rawCtx === 'modern' || rawCtx === 'casual') {
+          savedContext = rawCtx;
+        }
+      }
     } catch {
       // Ignore
     }
@@ -673,7 +737,10 @@ export const App: React.FC = () => {
       project_id: activeProject.id,
       gemini_api_key: savedKey,
       fix_ocr_spelling: true,
-      batch_size: 60,
+      translate_to: savedLang || 'vi',
+      translation_context: savedContext || 'casual',
+      force_retranslate: true,
+      batch_size: 30,
     });
   };
 
@@ -754,32 +821,47 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleDeleteProjectsBulkFromHistory = async (projectIds: string[]) => {
+  const handleDeleteProjectsBulkFromHistory = async (
+    projectIds: string[],
+    onProgress?: (info: { done: number; total: number; currentName: string }) => void
+  ) => {
     // Deduplicate IDs before sending
     const uniqueIds = Array.from(new Set(projectIds.filter((id) => id && id.trim().length > 0)));
     if (uniqueIds.length === 0) return;
 
+    const total = uniqueIds.length;
+    let deletedCount = 0;
+    const allFailed: Array<{ project_id: string; reason: string }> = [];
+
     try {
-      const res = await bulkDeleteProjects(uniqueIds);
-      const deletedSet = new Set(res.deleted);
+      for (let i = 0; i < total; i += 1) {
+        const pid = uniqueIds[i];
+        const matched = projects.find((p) => p.id === pid);
+        const currentName = matched ? matched.name : pid;
+        onProgress?.({ done: i, total, currentName });
 
-      // Clean history and projects state immediately
-      if (res.deleted.length > 0 || (res.not_found_count && res.not_found_count > 0)) {
-        setHistoryList((prev) => prev.filter((item) => !deletedSet.has(item.project_id)));
-        setProjects((prev) => prev.filter((p) => !deletedSet.has(p.id)));
+        const res = await bulkDeleteProjects([pid]);
+        const deletedSet = new Set(res.deleted);
 
-        // If the currently active project was deleted, clear the editor state
-        if (activeProject && (deletedSet.has(activeProject.id) || uniqueIds.includes(activeProject.id))) {
-          setActiveProject(null);
-          setSegments([]);
-          localStorage.removeItem(LAST_PROJECT_STORAGE_KEY);
+        if (res.deleted.length > 0 || (res.not_found_count && res.not_found_count > 0)) {
+          deletedCount += res.deleted_count || res.deleted.length || 0;
+          setHistoryList((prev) => prev.filter((item) => !deletedSet.has(item.project_id) && item.project_id !== pid));
+          setProjects((prev) => prev.filter((p) => !deletedSet.has(p.id) && p.id !== pid));
+
+          if (activeProject && (deletedSet.has(activeProject.id) || pid === activeProject.id)) {
+            setActiveProject(null);
+            setSegments([]);
+            localStorage.removeItem(LAST_PROJECT_STORAGE_KEY);
+          }
+        }
+        if (res.failed && res.failed.length > 0) {
+          allFailed.push(...res.failed);
         }
       }
 
-      const deletedCount = res.deleted_count || res.deleted.length || 0;
-      const failedCount = res.failed?.length || 0;
+      onProgress?.({ done: total, total, currentName: '' });
 
-      if (failedCount === 0) {
+      if (allFailed.length === 0) {
         const summary =
           deletedCount > 0
             ? `Đã xóa ${deletedCount} dự án.`
@@ -787,8 +869,8 @@ export const App: React.FC = () => {
         appendLog(summary, 'info');
         showToast('success', 'Xóa thành công', summary, 4000);
       } else {
-        const summary = `Đã xóa ${deletedCount} dự án. ${failedCount} dự án thất bại.`;
-        const detailList = res.failed!.map((f) => {
+        const summary = `Đã xóa ${deletedCount} dự án. ${allFailed.length} dự án thất bại.`;
+        const detailList = allFailed.map((f) => {
           const matchedProj = projects.find((p) => p.id === f.project_id);
           const name = matchedProj ? matchedProj.name : f.project_id;
           return `${name}: ${f.reason}`;
@@ -806,11 +888,11 @@ export const App: React.FC = () => {
   return (
     <div className="flex flex-col min-h-screen bg-base-100 text-base-content font-sans antialiased">
       {/* Top Main Navigation Header */}
-      <header className="sticky top-0 z-40 flex items-center justify-between px-5 py-2.5 bg-base-200/90 backdrop-blur-md border-b border-blue_slate-500/20 shadow-sm transition-smooth">
+      <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-2 bg-base-200/95 backdrop-blur-md border-b border-base-content/15 shadow-xs transition-smooth">
         {/* Brand / Logo */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-glaucous-500 to-pale_sky-400 text-ghost_white-DEFAULT shadow-md shadow-glaucous-900/30">
-            <Sparkles className="w-4.5 h-4.5 text-ghost_white-DEFAULT" />
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center justify-center w-8 h-8 rounded-xl bg-gradient-to-br from-linen-300 to-almond_silk-300 text-dust_grey-100 shadow-sm">
+            <Sparkles className="w-4 h-4 text-dust_grey-100" />
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-tight text-base-content leading-none">Sub Magic</h1>
@@ -847,7 +929,7 @@ export const App: React.FC = () => {
             type="button"
             onClick={() => setIsNewProjectModalOpen(true)}
             title="Tạo dự án mới từ đường dẫn video máy chủ"
-            className="btn btn-ghost btn-xs gap-1 border border-blue_slate-500/25 hover:border-primary hover:bg-base-300 cursor-pointer rounded-lg font-medium"
+            className="btn btn-sm btn-outline border-base-content/25 hover:border-primary hover:bg-base-300 hover:text-base-content text-base-content/90 gap-1.5 cursor-pointer rounded-full font-medium"
           >
             <Plus className="w-3.5 h-3.5 text-primary" />
             <span>Tạo mới</span>
@@ -866,7 +948,7 @@ export const App: React.FC = () => {
             onClick={() => fileInputRef.current?.click()}
             disabled={isUploading}
             title="Tải video trực tiếp từ máy tính"
-            className="btn btn-primary btn-xs gap-1.5 min-w-[95px] shadow-sm cursor-pointer rounded-lg font-semibold"
+            className="btn btn-primary btn-sm gap-1.5 min-w-[104px] shadow-xs cursor-pointer rounded-full font-semibold"
           >
             {isUploading ? (
               <>
@@ -895,12 +977,12 @@ export const App: React.FC = () => {
               setIsHistoryDrawerOpen(true);
             }}
             title="Xem danh sách lịch sử các lần trích xuất"
-            className="btn btn-outline btn-xs gap-1.5  hover:border-glaucous-500 hover:bg-base-300 text-base-content/85 cursor-pointer rounded-lg"
+            className="btn btn-sm btn-outline border-base-content/25 hover:border-primary hover:bg-base-300 hover:text-base-content text-base-content/90 gap-1.5 cursor-pointer rounded-full font-medium"
           >
-            <History className="w-3.5 h-3.5 text-base-content/60" />
+            <History className="w-3.5 h-3.5 text-base-content/70" />
             <span>Lịch sử</span>
             {historyList.length > 0 && (
-              <span className="badge badge-xs bg-primary text-primary-content border-none px-1.5 font-mono">
+              <span className="badge badge-xs bg-primary text-primary-content border-none px-1.5 font-mono tabular-nums">
                 {historyList.length}
               </span>
             )}
@@ -908,7 +990,7 @@ export const App: React.FC = () => {
         </div>
 
         {/* Right: Hardware Chip, Theme Toggle & Export Button */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
           {/* Hardware Detection Badge */}
           {hardwareInfo && (
             <div
@@ -917,7 +999,7 @@ export const App: React.FC = () => {
                   ? hardwareInfo.gpu_names.join(', ')
                   : 'CPU inference only'
               }`}
-              className="hidden md:flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono bg-base-300/50 border border-blue_slate-500/20 rounded-lg text-base-content/75"
+              className="hidden md:flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-mono bg-base-300/60 border border-base-content/15 rounded-full text-base-content/80"
             >
               <Cpu className={`w-3.5 h-3.5 ${hardwareInfo.cuda_available ? 'text-accent' : 'text-base-content/40'}`} />
               <span>{hardwareInfo.cuda_available ? 'CUDA GPU' : 'CPU'}</span>
@@ -928,30 +1010,37 @@ export const App: React.FC = () => {
           <button
             type="button"
             onClick={toggleTheme}
+            aria-label={theme === 'studio-dark' ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
             title={theme === 'studio-dark' ? 'Chuyển sang giao diện Sáng' : 'Chuyển sang giao diện Tối'}
-            className="btn btn-ghost btn-xs btn-square text-base-content/80 hover:text-primary hover:bg-base-300 rounded-lg cursor-pointer transition-smooth"
+            className="btn btn-ghost btn-sm btn-circle text-base-content/80 hover:text-primary hover:bg-base-300 cursor-pointer transition-smooth"
           >
-            {theme === 'studio-dark' ? <Sun className="w-3.5 h-3.5 text-pale_sky-300" /> : <Moon className="w-3.5 h-3.5 text-glaucous-DEFAULT" />}
+            {theme === 'studio-dark' ? <Sun className="w-4 h-4 text-linen-400" /> : <Moon className="w-4 h-4 text-linen-200" />}
           </button>
 
-          {/* Export Subtitles Button */}
+          {/* Single Unified Export Subtitles Button */}
           <button
             type="button"
             onClick={() => setIsExportModalOpen(true)}
             disabled={!activeProject || segments.length === 0}
-            className="btn btn-primary btn-xs gap-1.5 shadow-sm rounded-lg font-semibold cursor-pointer disabled:cursor-not-allowed"
+            title="Xuất tệp phụ đề (.SRT, .VTT, .ASS, .TXT)"
+            className="btn btn-secondary btn-sm gap-1.5 shadow-xs rounded-full font-semibold cursor-pointer disabled:cursor-not-allowed"
           >
             <Download className="w-3.5 h-3.5" />
             <span>Xuất Phụ Đề</span>
+            {segments.length > 0 && (
+              <span className="badge badge-xs bg-secondary-content/20 text-secondary-content border-none px-1.5 font-mono tabular-nums">
+                {segments.length}
+              </span>
+            )}
           </button>
         </div>
       </header>
 
       {/* Main 2-Column Responsive Workspace Grid */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 max-w-[1700px] w-full mx-auto">
-        {/* Left Column: Video Player, Control Panel, and Progress (7 Cols on desktop) */}
-        <div className="lg:col-span-7 flex flex-col gap-4">
-          {/* 1. Video Player & ROI Canvas */}
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3.5 px-4 py-3 max-w-[1760px] w-full mx-auto">
+        {/* Left Column: Sticky Video Player + Status/Progress Dock + Collapsible OCR/Whisper Config */}
+        <div className="lg:col-span-7 flex flex-col gap-2.5 lg:sticky lg:top-[56px] lg:self-start">
+          {/* 1. Video Player & ROI Canvas (Always stays in view while scrolling subtitles) */}
           <VideoWorkspace
             project={activeProject}
             roiConfig={roiConfig}
@@ -964,20 +1053,7 @@ export const App: React.FC = () => {
             onUploadClick={() => fileInputRef.current?.click()}
           />
 
-          {/* 2. Extraction Control Panel (STT / OCR / Models) */}
-          <ControlPanel
-            project={activeProject}
-            hardwareInfo={hardwareInfo}
-            modelCatalog={modelCatalog}
-            isProcessing={isProcessing}
-            onStartSTT={handleStartSTT}
-            onStartOCR={handleStartOCR}
-            onStartLLM={handleStartLLM}
-            onCancelJob={handleCancelJob}
-            onOpenExport={() => setIsExportModalOpen(true)}
-          />
-
-          {/* 3. Real-time Progress Bar & Terminal Logs */}
+          {/* 2. Real-time Progress Bar, Status Indicator & Collapsible Config / Log Toggles */}
           <ProgressBar
             isProcessing={isProcessing}
             progress={jobProgress}
@@ -985,11 +1061,28 @@ export const App: React.FC = () => {
             statusText={jobStatusText}
             logs={logs}
             onClearLogs={() => setLogs([])}
+            isConfigOpen={isConfigOpen}
+            onToggleConfig={() => setIsConfigOpen((prev) => !prev)}
+            onCancelJob={handleCancelJob}
           />
+
+          {/* 3. Collapsible Extraction Control Panel (STT / OCR / Models) */}
+          {isConfigOpen && (
+            <ControlPanel
+              project={activeProject}
+              hardwareInfo={hardwareInfo}
+              modelCatalog={modelCatalog}
+              isProcessing={isProcessing}
+              onStartSTT={handleStartSTT}
+              onStartOCR={handleStartOCR}
+              onStartLLM={handleStartLLM}
+              onCancelJob={handleCancelJob}
+            />
+          )}
         </div>
 
-        {/* Right Column: Subtitle Editor (5 Cols on desktop, Full Height) */}
-        <div className="lg:col-span-5 flex flex-col min-h-[580px] lg:h-[calc(100vh-80px)] lg:sticky lg:top-16">
+        {/* Right Column: Subtitle Editor (5 Cols on desktop, Full Viewport Height) */}
+        <div className="lg:col-span-5 flex flex-col min-h-[560px] lg:h-[calc(100vh-68px)] lg:sticky lg:top-[56px]">
           <SubtitleEditor
             segments={segments}
             currentTime={currentTime}
@@ -1010,9 +1103,10 @@ export const App: React.FC = () => {
       <ExportModal
         isOpen={isExportModalOpen}
         onClose={() => setIsExportModalOpen(false)}
-        project={activeProject}
+        project={activeProject ? { ...activeProject, segments } : null}
         onExportSuccess={(filename) => {
           appendLog(`Đã tải tệp xuất: ${filename}`, 'success');
+          showToast('success', 'Đã xuất phụ đề', `Tệp "${filename}" đã được tải xuống thành công.`, 3000);
         }}
       />
 
@@ -1033,16 +1127,18 @@ export const App: React.FC = () => {
       {/* New Project Modal Dialog */}
       {isNewProjectModalOpen && (
         <div className="modal modal-open bg-black/60 backdrop-blur-xs">
-          <div className="modal-box max-w-md p-0 overflow-hidden bg-base-200 border  rounded-xl shadow-2xl">
-            <div className="flex items-center justify-between px-5 py-3.5 bg-base-300/80 border-b border-blue_slate-500/25">
+          <div className="modal-box max-w-md p-0 overflow-hidden bg-base-200 border border-base-content/20 rounded-xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-3.5 bg-base-300/80 border-b border-base-content/15">
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
                 <h3 className="font-bold text-base-content text-sm tracking-tight">Tạo Dự Án Mới</h3>
               </div>
               <button
                 type="button"
+                aria-label="Đóng cửa sổ tạo dự án"
+                title="Đóng"
                 onClick={() => setIsNewProjectModalOpen(false)}
-                className="btn btn-ghost btn-xs btn-square rounded-lg text-base-content/70 hover:text-base-content hover:bg-base-200"
+                className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:text-base-content hover:bg-base-200 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1058,7 +1154,7 @@ export const App: React.FC = () => {
                   value={newProjectName}
                   onChange={(e) => setNewProjectName(e.target.value)}
                   placeholder="Ví dụ: Video Marketing v1"
-                  className="input input-bordered input-sm w-full bg-base-100  focus:border-primary rounded-lg text-xs"
+                  className="input input-bordered input-sm w-full bg-base-100 border-base-content/25 focus:border-primary rounded-lg text-xs"
                 />
               </div>
 
@@ -1072,7 +1168,7 @@ export const App: React.FC = () => {
                   value={newVideoPath}
                   onChange={(e) => setNewVideoPath(e.target.value)}
                   placeholder="Ví dụ: d:\videos\sample.mp4"
-                  className="input input-bordered input-sm w-full font-mono text-xs bg-base-100  focus:border-primary rounded-lg"
+                  className="input input-bordered input-sm w-full font-mono text-xs bg-base-100 border-base-content/25 focus:border-primary rounded-lg"
                 />
               </div>
 
@@ -1082,7 +1178,7 @@ export const App: React.FC = () => {
                   <select
                     value={newProjectMode}
                     onChange={(e) => setNewProjectMode(e.target.value as ExtractionMode)}
-                    className="select select-bordered select-sm w-full bg-base-100  focus:border-primary rounded-lg text-xs"
+                    className="select select-bordered select-sm w-full bg-base-100 border-base-content/25 focus:border-primary rounded-lg text-xs"
                   >
                     <option value="stt">STT (Âm thanh Whisper)</option>
                     <option value="ocr">OCR (Chữ viết Hardsub)</option>
@@ -1095,7 +1191,7 @@ export const App: React.FC = () => {
                   <select
                     value={newProjectLanguage}
                     onChange={(e) => setNewProjectLanguage(e.target.value)}
-                    className="select select-bordered select-sm w-full bg-base-100  focus:border-primary rounded-lg text-xs"
+                    className="select select-bordered select-sm w-full bg-base-100 border-base-content/25 focus:border-primary rounded-lg text-xs"
                   >
                     <option value="auto">Auto (Tự động)</option>
                     <option value="vi">Tiếng Việt (vi)</option>
@@ -1107,17 +1203,17 @@ export const App: React.FC = () => {
                 </div>
               </div>
 
-              <div className="modal-action px-0 pt-4 border-t border-blue_slate-500/20 mt-3 gap-2">
+              <div className="modal-action px-0 pt-4 border-t border-base-content/15 mt-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setIsNewProjectModalOpen(false)}
-                  className="btn btn-sm btn-ghost rounded-lg font-medium"
+                  className="btn btn-sm btn-ghost rounded-full font-medium"
                 >
                   Hủy
                 </button>
                 <button
                   type="submit"
-                  className="btn btn-sm btn-primary rounded-lg font-semibold shadow-sm"
+                  className="btn btn-sm btn-primary rounded-full font-semibold shadow-xs"
                 >
                   Tạo Dự Án
                 </button>

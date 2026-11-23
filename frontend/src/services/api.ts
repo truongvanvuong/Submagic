@@ -25,7 +25,7 @@ import type {
 
 // Detect development environment (Vite default port 5173 or 3000)
 // To bypass WSL2 proxy bottlenecks on large video uploads and streaming,
-// connect directly to backend on port 8000 when running in local dev.
+// connect directly to backend on port 8001 when running in local dev.
 const isDev =
   typeof window !== 'undefined' &&
   (window.location.port === '5173' || window.location.port === '3000');
@@ -37,13 +37,13 @@ const defaultBackendHost =
 
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ||
-  (isDev ? `http://${defaultBackendHost}:8000` : '');
+  (isDev ? `http://${defaultBackendHost}:8001` : '');
 
 export const WS_BASE_URL =
   import.meta.env.VITE_WS_BASE_URL ||
   (typeof window !== 'undefined'
-    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${defaultBackendHost}:8000`
-    : 'ws://127.0.0.1:8000');
+    ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${defaultBackendHost}:8001`
+    : 'ws://127.0.0.1:8001');
 
 /**
  * Custom API Error containing HTTP status code and server detail.
@@ -437,6 +437,63 @@ export async function exportSubtitles(
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
 
   return { blob, filename, text };
+}
+
+/**
+ * Clear persistent translation cache with optional filters.
+ */
+export async function clearTranslationCache(
+  targetLang?: string,
+  contextType?: string,
+  modelName?: string
+): Promise<{ cleared: boolean; deleted_rows: number }> {
+  const params = new URLSearchParams();
+  if (targetLang) params.set('target_lang', targetLang);
+  if (contextType) params.set('context_type', contextType);
+  if (modelName) params.set('model_name', modelName);
+
+  return request<{ cleared: boolean; deleted_rows: number }>(
+    `/api/jobs/translation-cache?${params.toString()}`,
+    {
+      method: 'DELETE',
+    }
+  );
+}
+
+/**
+ * Estimate token and cost for selective Gemini Vision OCR fallback.
+ */
+export async function estimateGeminiOCR(
+  projectId: string,
+  maxLines: number = 20
+): Promise<any> {
+  return request<any>('/api/jobs/estimate-gemini-ocr', {
+    method: 'POST',
+    body: JSON.stringify({ project_id: projectId, max_lines: maxLines }),
+  });
+}
+
+/**
+ * Trigger selective Gemini Vision OCR fallback on low-confidence segments.
+ */
+export async function executeGeminiOCRFallback(
+  projectId: string,
+  maxLines: number = 20,
+  geminiApiKey?: string,
+  model?: string
+): Promise<{ project_id: string; processed_segments: number; updated_segment_ids: string[] }> {
+  return request<{ project_id: string; processed_segments: number; updated_segment_ids: string[] }>(
+    '/api/jobs/gemini-ocr-fallback',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        project_id: projectId,
+        max_lines: maxLines,
+        gemini_api_key: geminiApiKey,
+        model,
+      }),
+    }
+  );
 }
 
 /**

@@ -110,14 +110,14 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
   const toggleAll = () => setSelectedIds(allSelected ? [] : historyList.map((h) => h.id));
 
   return (
-    <div className="fixed inset-0 z-50 overflow-hidden bg-blue_slate-100/70 backdrop-blur-xs transition-opacity animate-in fade-in">
+    <div className="fixed inset-0 z-50 overflow-hidden bg-black/60 backdrop-blur-xs transition-opacity animate-in fade-in">
       {/* Slide-over panel */}
       <div className="fixed inset-y-0 right-0 flex max-w-full pl-10">
-        <div className="w-screen max-w-md bg-base-200 border-l border-blue_slate-500/25 shadow-2xl flex flex-col font-sans">
+        <div className="w-screen max-w-md bg-base-200 border-l border-base-content/20 shadow-2xl flex flex-col font-sans">
           {/* Drawer Header */}
-          <div className="flex items-center justify-between px-5 py-4 bg-base-300/80 border-b border-blue_slate-500/20">
+          <div className="flex items-center justify-between px-5 py-4 bg-base-300/80 border-b border-base-content/15">
             <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-glaucous-500/15 text-glaucous-600 dark:text-pale_sky-400 rounded-xl border border-blue_slate-500/30 shadow-xs">
+              <div className="p-2.5 bg-primary/15 text-primary rounded-xl border border-base-content/20 shadow-xs">
                 <History className="w-5 h-5" />
               </div>
               <div>
@@ -132,7 +132,8 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="btn btn-sm btn-circle btn-ghost text-base-content/70 hover:text-base-content"
+              aria-label="Đóng ngăn lịch sử"
+              className="btn btn-sm btn-circle btn-ghost text-base-content/70 hover:text-base-content cursor-pointer"
               title="Đóng (Close)"
             >
               <X className="w-5 h-5" />
@@ -141,7 +142,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
 
           {/* Bulk selection toolbar */}
           {historyList.length > 0 && onDeleteHistoryBulk && (
-            <div className="flex items-center justify-between px-5 py-2.5 bg-base-200 border-b border-blue_slate-500/20">
+            <div className="flex items-center justify-between px-5 py-2.5 bg-base-200 border-b border-base-content/15">
               <label className="label cursor-pointer gap-2 p-0">
                 <input
                   type="checkbox"
@@ -160,9 +161,9 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                 type="button"
                 disabled={validSelected.length === 0}
                 onClick={() => setIsBulkConfirmOpen(true)}
-                className="btn btn-xs btn-error gap-1 rounded-lg"
+                className="btn btn-sm btn-error gap-1 rounded-full cursor-pointer"
               >
-                <Trash2 className="w-3 h-3" />
+                <Trash2 className="w-3.5 h-3.5" />
                 Xóa đã chọn
               </button>
             </div>
@@ -179,7 +180,8 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                 <button
                   type="button"
                   onClick={() => setDownloadError(null)}
-                  className="btn btn-ghost btn-xs btn-circle text-error-content hover:bg-error-content/20"
+                  aria-label="Đóng thông báo lỗi"
+                  className="btn btn-ghost btn-xs btn-circle text-error-content hover:bg-error-content/20 cursor-pointer"
                   title="Đóng thông báo"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -189,8 +191,8 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
 
             {historyList.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-64 text-center p-6 text-base-content/50">
-                <div className="w-16 h-16 rounded-2xl bg-blue_slate-200/50 border border-blue_slate-500/30 flex items-center justify-center mb-3 shadow-md">
-                  <History className="w-8 h-8 text-glaucous-600 dark:text-pale_sky-400" />
+                <div className="w-16 h-16 rounded-2xl bg-base-300 border border-base-content/20 flex items-center justify-center mb-3 shadow-md">
+                  <History className="w-8 h-8 text-primary" />
                 </div>
                 <p className="font-semibold text-sm text-base-content">Chưa có lịch sử trích xuất</p>
                 <p className="text-xs text-base-content/50 mt-1 max-w-xs leading-relaxed">
@@ -205,8 +207,8 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                     key={item.id}
                     className={`card rounded-xl transition-smooth ${
                       isActive
-                        ? 'bg-glaucous-500/10 border border-glaucous-500 ring-1 ring-glaucous-400/50 shadow-sm'
-                        : 'bg-base-100 border border-blue_slate-500/25 hover:border-glaucous-500/40 shadow-xs'
+                        ? 'bg-primary/10 border border-primary ring-1 ring-primary/50 shadow-sm'
+                        : 'bg-base-100 border border-base-content/20 hover:border-primary/40 shadow-xs'
                     }`}
                   >
                     <div className="card-body p-4 gap-2.5">
@@ -238,7 +240,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                             </span>
                           )}
                           {item.detected_language && (
-                            <span className="badge badge-neutral badge-sm text-[10px] uppercase font-mono bg-glaucous-500 text-ghost_white-DEFAULT border-none">
+                            <span className="badge badge-neutral badge-sm text-[10px] uppercase font-mono bg-primary text-primary-content border-none">
                               {item.detected_language}
                             </span>
                           )}
@@ -248,7 +250,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                       {/* Info row: Date, duration, segment count */}
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-base-content/65">
                         <span className="flex items-center gap-1 font-mono">
-                          <Calendar className="w-3 h-3 text-glaucous-600 dark:text-pale_sky-400" />
+                          <Calendar className="w-3 h-3 text-primary" />
                           {formatDate(item.created_at)}
                         </span>
                         <span className="flex items-center gap-1">
@@ -257,7 +259,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                         </span>
                         {item.duration_sec > 0 && (
                           <span className="flex items-center gap-1 font-mono">
-                            <Clock className="w-3 h-3 text-glaucous-600 dark:text-pale_sky-400" />
+                            <Clock className="w-3 h-3 text-primary" />
                             {formatDuration(item.duration_sec)}
                             {item.elapsed_sec > 0 && ` (${item.elapsed_sec}s)`}
                           </span>
@@ -265,7 +267,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                       </div>
 
                       {/* Action buttons */}
-                      <div className="flex items-center justify-between pt-2.5 border-t border-blue_slate-500/20 mt-1">
+                      <div className="flex items-center justify-between pt-2.5 border-t border-base-content/15 mt-1">
                         <div className="flex items-center gap-1.5">
                           <button
                             type="button"
@@ -273,11 +275,11 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                               onSelectProject(item.project_id);
                               onClose();
                             }}
-                            className={`btn btn-xs rounded-lg font-semibold cursor-pointer ${
-                              isActive ? 'btn-primary' : 'btn-outline border-blue_slate-500/30 text-base-content hover:bg-base-300'
+                            className={`btn btn-sm rounded-full font-semibold cursor-pointer ${
+                              isActive ? 'btn-primary' : 'btn-outline border-base-content/25 text-base-content hover:bg-base-300'
                             }`}
                           >
-                            <Eye className="w-3 h-3" />
+                            <Eye className="w-3.5 h-3.5" />
                             <span>{isActive ? 'Đang mở' : 'Xem lại'}</span>
                           </button>
 
@@ -285,13 +287,13 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                             type="button"
                             disabled={downloadingId === item.id}
                             onClick={(e) => handleOpenExportModal(e, item)}
-                            className="btn btn-xs btn-outline btn-success rounded-lg font-semibold cursor-pointer disabled:opacity-50"
+                            className="btn btn-sm btn-outline btn-success rounded-full font-semibold cursor-pointer disabled:opacity-50"
                             title="Tùy chọn tải phụ đề (SRT, VTT, TXT...)"
                           >
                             {downloadingId === item.id ? (
-                              <Loader2 className="w-3 h-3 animate-spin" />
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             ) : (
-                              <Download className="w-3 h-3" />
+                              <Download className="w-3.5 h-3.5" />
                             )}
                             <span>Tải sub</span>
                           </button>
@@ -306,10 +308,11 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                               projectName: item.project_name || 'Dự án',
                             })
                           }
-                          className="btn btn-xs btn-ghost text-error hover:bg-error/10 rounded-lg cursor-pointer"
+                          aria-label={`Xóa dự án ${item.project_name || 'Dự án'}`}
+                          className="btn btn-sm btn-circle btn-ghost text-error hover:bg-error/10 cursor-pointer"
                           title="Xóa dự án & tệp liên quan"
                         >
-                          <Trash2 className="w-3 h-3" />
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                     </div>
@@ -320,7 +323,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
           </div>
 
           {/* Footer */}
-          <div className="p-3.5 bg-base-300/60 border-t border-blue_slate-500/20 text-center text-xs text-base-content/60">
+          <div className="p-3.5 bg-base-300/60 border-t border-base-content/15 text-center text-xs text-base-content/60">
             Dữ liệu lịch sử được lưu trữ bền vững trong cơ sở dữ liệu SQLite
           </div>
         </div>

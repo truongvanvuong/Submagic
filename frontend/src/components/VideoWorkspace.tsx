@@ -248,11 +248,38 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
     updateRenderRect();
   };
 
-  const handleTimeUpdate = () => {
+  const lastReportedTimeRef = useRef<number>(0);
+
+  const handleTimeUpdate = useCallback(() => {
     const video = videoElementRef.current;
     if (!video) return;
+    lastReportedTimeRef.current = video.currentTime;
     onTimeUpdate(video.currentTime);
-  };
+  }, [onTimeUpdate, videoElementRef]);
+
+  // High-frequency (~50ms) time sync while playing so SubtitleEditor list highlights without 250ms HTML5 timeupdate lag
+  useEffect(() => {
+    if (!isPlaying) return;
+    let rafId: number | null = null;
+    let lastTick = performance.now();
+
+    const tick = (now: number) => {
+      const video = videoElementRef.current;
+      if (video && !video.paused && !video.ended) {
+        if (now - lastTick >= 50) {
+          lastTick = now;
+          lastReportedTimeRef.current = video.currentTime;
+          onTimeUpdate(video.currentTime);
+        }
+        rafId = requestAnimationFrame(tick);
+      }
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [isPlaying, onTimeUpdate, videoElementRef]);
 
   const handleVideoError = async () => {
     if (!videoStreamUrl) return;
@@ -276,10 +303,11 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
   useEffect(() => {
     const video = videoElementRef.current;
     if (!video) return;
-    // Only seek if external currentTime deviates noticeably from video.currentTime (> 0.15s)
-    // This avoids feedback loops during regular playback timeupdate events while ensuring
-    // accurate seeking when clicking subtitle segments at start, middle, or end of video.
-    if (Math.abs((video.currentTime || 0) - currentTime) > 0.15) {
+    if (
+      Math.abs(currentTime - lastReportedTimeRef.current) > 0.02 &&
+      Math.abs((video.currentTime || 0) - currentTime) > 0.05
+    ) {
+      lastReportedTimeRef.current = Math.max(0, currentTime);
       video.currentTime = Math.max(0, currentTime);
     }
   }, [currentTime, videoElementRef]);
@@ -427,17 +455,17 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
     const mw = main.w * w;
     const mh = main.h * h;
 
-    ctx.fillStyle = 'rgba(182, 111, 73, 0.16)';
+    ctx.fillStyle = 'rgba(199, 143, 82, 0.16)';
     ctx.fillRect(mx, my, mw, mh);
 
-    ctx.strokeStyle = '#b66f49';
+    ctx.strokeStyle = '#c78f52';
     ctx.lineWidth = 2;
     ctx.setLineDash([4, 4]);
     ctx.strokeRect(mx, my, mw, mh);
     ctx.setLineDash([]);
 
     // Draw main label
-    ctx.fillStyle = '#b66f49';
+    ctx.fillStyle = '#c78f52';
     ctx.font = 'bold 11px sans-serif';
     ctx.fillText('SUBTITLE ROI', mx + 4, my + 14);
 
@@ -452,7 +480,7 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
       { x: mx, y: my + mh },
       { x: mx, y: my + mh / 2 },
     ];
-    handles.forEach((pt) => drawHandle(pt.x, pt.y, '#b66f49'));
+    handles.forEach((pt) => drawHandle(pt.x, pt.y, '#c78f52'));
 
     // Draw exclusion masks
     (roiConfig.exclusion_masks || []).forEach((mask, idx) => {
@@ -724,41 +752,41 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
 
   return (
     <div
-      className={`flex flex-col bg-base-200 rounded-xl border border-blue_slate-500/20 shadow-lg overflow-hidden transition-smooth ${className}`}
+      className={`flex flex-col bg-base-200 rounded-xl border border-base-content/15 shadow-xs overflow-hidden transition-smooth ${className}`}
     >
       {/* Top Workspace Toolbar: ROI Presets and Actions */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-base-300/70 border-b border-blue_slate-500/20 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 bg-base-300/60 border-b border-base-content/15 text-xs">
         <div className="flex items-center gap-2 flex-wrap">
-          <Layers className="w-4 h-4 text-primary" />
-          <span className="font-semibold text-base-content text-xs">Khu vực ROI & Mask</span>
-          <span className="text-blue_slate-500/40">|</span>
+          <Layers className="w-3.5 h-3.5 text-primary" />
+          <span className="font-semibold text-base-content text-xs">Vùng nhận diện ROI & Mask</span>
+          <span className="text-base-content/25">|</span>
 
-          {/* Quick Presets */}
-          <div className="join border border-blue_slate-500/30 rounded-lg overflow-hidden">
+          {/* Quick Presets (btn-sm rounded-full join) */}
+          <div className="join border border-base-content/20 rounded-full overflow-hidden">
             <button
               type="button"
               onClick={applyPreset16_9}
               disabled={readOnlyROI || !project}
               title="Vùng phụ đề chuẩn 16:9 (YouTube, Phim)"
-              className="btn btn-xs join-item bg-base-200 hover:bg-base-300 border-none font-medium cursor-pointer"
+              className="btn btn-sm join-item bg-base-200 hover:bg-base-300 border-none font-medium cursor-pointer"
             >
-              Preset 16:9
+              16:9
             </button>
             <button
               type="button"
               onClick={applyPreset9_16}
               disabled={readOnlyROI || !project}
               title="Vùng phụ đề chuẩn 9:16 (TikTok, Shorts, Reels)"
-              className="btn btn-xs join-item bg-base-200 hover:bg-base-300 border-none font-medium cursor-pointer"
+              className="btn btn-sm join-item bg-base-200 hover:bg-base-300 border-none font-medium cursor-pointer"
             >
-              Preset 9:16
+              9:16
             </button>
             <button
               type="button"
               onClick={resetROI}
               disabled={readOnlyROI || !project}
               title="Đặt lại khung ROI về mặc định"
-              className="btn btn-xs join-item bg-base-200 hover:bg-base-300 border-none text-base-content/60 hover:text-base-content font-medium cursor-pointer"
+              className="btn btn-sm join-item bg-base-200 hover:bg-base-300 border-none text-base-content/75 hover:text-base-content font-medium cursor-pointer"
             >
               Đặt lại
             </button>
@@ -772,10 +800,10 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
             onClick={() => setIsDrawingMaskMode(!isDrawingMaskMode)}
             disabled={readOnlyROI || !project}
             title="Vẽ vùng che (loại bỏ watermark/logo)"
-            className={`btn btn-xs gap-1 rounded-lg font-medium cursor-pointer transition-smooth ${
+            className={`btn btn-sm gap-1 rounded-full font-medium cursor-pointer transition-smooth ${
               isDrawingMaskMode
                 ? 'btn-warning shadow-xs'
-                : 'btn-outline border-amber-500/40 text-amber-500 hover:bg-amber-500/10'
+                : 'btn-outline btn-secondary'
             }`}
           >
             <Plus className="w-3.5 h-3.5" />
@@ -792,7 +820,7 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                 setSelectedMaskIndex(null);
               }}
               title="Xóa tất cả vùng che"
-              className="btn btn-xs btn-error btn-outline gap-1 rounded-lg cursor-pointer"
+              className="btn btn-sm btn-error btn-outline gap-1 rounded-full cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>Xóa ({roiConfig.exclusion_masks.length})</span>
@@ -804,8 +832,9 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
             type="button"
             onClick={() => setShowROIOverlay(!showROIOverlay)}
             disabled={!project}
+            aria-label={showROIOverlay ? 'Ẩn khung ROI' : 'Hiện khung ROI'}
             title={showROIOverlay ? 'Ẩn khung ROI' : 'Hiện khung ROI'}
-            className="btn btn-ghost btn-xs btn-square text-base-content/75 hover:text-primary hover:bg-base-300 rounded-lg cursor-pointer"
+            className="btn btn-ghost btn-sm btn-circle text-base-content/75 hover:text-primary hover:bg-base-300 cursor-pointer"
           >
             {showROIOverlay ? <Eye className="w-4 h-4 text-primary" /> : <EyeOff className="w-4 h-4" />}
           </button>
@@ -815,7 +844,7 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
       {/* Main Video Viewport Container */}
       <div
         ref={containerRef}
-        className="relative w-full aspect-video bg-blue_slate-100 flex items-center justify-center overflow-hidden select-none"
+        className="relative w-full aspect-video max-h-[calc(100vh-260px)] bg-dust_grey-100 flex items-center justify-center overflow-hidden select-none"
       >
         {videoStreamUrl ? (
           <>
@@ -871,22 +900,22 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
           </>
         ) : (
           /* Empty State */
-          <div className="hero p-8 text-center">
+          <div className="hero p-8 text-center bg-base-200/40">
             <div className="hero-content flex-col gap-3">
-              <div className="w-16 h-16 rounded-2xl bg-base-300 border border-blue_slate-500/30 flex items-center justify-center text-primary shadow-lg">
+              <div className="w-16 h-16 rounded-2xl bg-base-300 border border-base-content/20 flex items-center justify-center text-primary shadow-md">
                 <Video className="w-8 h-8" />
               </div>
               <h3 className="text-base font-bold text-base-content tracking-tight">
                 Chưa có video nào được chọn
               </h3>
-              <p className="text-xs text-base-content/60 max-w-sm leading-relaxed">
+              <p className="text-xs text-base-content/65 max-w-sm leading-relaxed">
                 Hãy tải lên một tệp video (MP4, MKV, WebM) để bắt đầu trích xuất phụ đề tự động bằng Whisper AI hoặc Hardsub OCR.
               </p>
               {onUploadClick && (
                 <button
                   type="button"
                   onClick={onUploadClick}
-                  className="btn btn-sm btn-primary gap-1.5 mt-2 rounded-lg font-semibold shadow-sm cursor-pointer"
+                  className="btn btn-sm btn-primary gap-1.5 mt-2 rounded-full font-semibold shadow-sm cursor-pointer"
                 >
                   <Upload className="w-4 h-4" />
                   <span>Tải video lên ngay</span>
@@ -927,15 +956,16 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
       </div>
 
       {/* Bottom Video Playback Controls Bar */}
-      <div className="flex flex-col px-4 py-3 bg-base-300/60 border-t border-blue_slate-500/20 gap-2.5">
+      <div className="flex flex-col px-3.5 py-2.5 bg-base-300/60 border-t border-base-content/15 gap-2">
         {/* Timeline Scrubber */}
         <div className="flex items-center gap-2.5">
-          <span className="text-[11px] font-mono font-medium text-primary min-w-[50px] tracking-tight">
+          <span className="text-[11px] font-mono tabular-nums font-medium text-primary min-w-[50px] tracking-tight">
             {formatTimecode(currentTime)}
           </span>
           <div className="relative flex-1 flex items-center">
             <input
               type="range"
+              aria-label="Thanh tua thời gian video"
               min={0}
               max={duration || 100}
               step={0.05}
@@ -945,23 +975,24 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
               className="range range-primary range-xs w-full disabled:opacity-30 cursor-pointer"
             />
           </div>
-          <span className="text-[11px] font-mono text-base-content/50 min-w-[50px] text-right tracking-tight">
+          <span className="text-[11px] font-mono tabular-nums text-base-content/60 min-w-[50px] text-right tracking-tight">
             {formatTimecode(duration)}
           </span>
         </div>
 
-        {/* Buttons Controls */}
+        {/* Buttons Controls (btn-sm rounded-full / btn-circle) */}
         <div className="flex items-center justify-between text-base-content/85">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1">
             {/* Play/Pause */}
             <button
               type="button"
               onClick={togglePlayPause}
               disabled={!project}
+              aria-label={isPlaying ? 'Tạm dừng (Phím Space)' : 'Phát (Phím Space)'}
               title={isPlaying ? 'Tạm dừng (Phím Space)' : 'Phát (Phím Space)'}
-              className="btn btn-primary btn-sm btn-circle shadow-md cursor-pointer transition-smooth"
+              className="btn btn-primary btn-sm btn-circle shadow-xs cursor-pointer transition-smooth"
             >
-              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4 fill-primary-content ml-0.5" />}
+              {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5 fill-primary-content ml-0.5" />}
             </button>
 
             {/* Skip -5s */}
@@ -969,10 +1000,11 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
               type="button"
               onClick={() => handleSkip(-5)}
               disabled={!project}
+              aria-label="Lùi 5 giây"
               title="Lùi 5 giây"
-              className="btn btn-ghost btn-sm btn-square hover:bg-base-200 rounded-lg cursor-pointer text-base-content/75 hover:text-base-content"
+              className="btn btn-ghost btn-sm btn-circle hover:bg-base-200 cursor-pointer text-base-content/75 hover:text-base-content"
             >
-              <RotateCcw className="w-4 h-4" />
+              <RotateCcw className="w-3.5 h-3.5" />
             </button>
 
             {/* Skip +5s */}
@@ -980,37 +1012,40 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
               type="button"
               onClick={() => handleSkip(5)}
               disabled={!project}
+              aria-label="Tua tới 5 giây"
               title="Tua tới 5 giây"
-              className="btn btn-ghost btn-sm btn-square hover:bg-base-200 rounded-lg cursor-pointer text-base-content/75 hover:text-base-content"
+              className="btn btn-ghost btn-sm btn-circle hover:bg-base-200 cursor-pointer text-base-content/75 hover:text-base-content"
             >
-              <RotateCw className="w-4 h-4" />
+              <RotateCw className="w-3.5 h-3.5" />
             </button>
 
             {/* Volume Control */}
-            <div className="flex items-center gap-1.5 ml-2">
+            <div className="flex items-center gap-1.5 ml-1.5">
               <button
                 type="button"
                 onClick={toggleMute}
                 disabled={!project}
-                className="btn btn-ghost btn-xs btn-square hover:bg-base-200 rounded-lg cursor-pointer"
+                aria-label={isMuted ? 'Bật âm' : 'Tắt âm'}
                 title={isMuted ? 'Bật âm' : 'Tắt âm'}
+                className="btn btn-ghost btn-sm btn-circle hover:bg-base-200 cursor-pointer"
               >
                 {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-error" /> : <Volume2 className="w-4 h-4 text-base-content/75" />}
               </button>
               <input
                 type="range"
+                aria-label="Điều chỉnh âm lượng"
                 min={0}
                 max={1}
                 step={0.05}
                 value={isMuted ? 0 : volume}
                 onChange={handleVolumeChange}
                 disabled={!project}
-                className="range range-xs w-16 range-primary cursor-pointer"
+                className="range range-xs w-14 sm:w-16 range-primary cursor-pointer"
               />
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {/* Subtitle CC & Settings Group */}
             <div className="flex items-center gap-1">
               {/* CC Toggle Button */}
@@ -1018,8 +1053,9 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                 type="button"
                 onClick={toggleSubtitlesEnabled}
                 disabled={!project || segments.length === 0}
+                aria-label={subtitleSettings.enabled ? 'Tắt phụ đề (CC)' : 'Bật phụ đề (CC)'}
                 title={subtitleSettings.enabled ? 'Tắt phụ đề (CC)' : 'Bật phụ đề (CC)'}
-                className={`btn btn-xs px-2 font-bold font-mono transition-all ${
+                className={`btn btn-sm px-2.5 rounded-full font-bold font-mono transition-all cursor-pointer ${
                   subtitleSettings.enabled && segments.length > 0
                     ? 'btn-primary'
                     : 'btn-ghost opacity-60'
@@ -1034,17 +1070,18 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                   tabIndex={0}
                   type="button"
                   disabled={!project}
+                  aria-label="Tùy chỉnh phụ đề & vị trí"
                   title="Tùy chỉnh phụ đề & vị trí"
-                  className="btn btn-ghost btn-xs btn-square text-base-content/80 hover:text-primary hover:bg-base-300 rounded-lg"
+                  className="btn btn-ghost btn-sm btn-circle text-base-content/80 hover:text-primary hover:bg-base-300 cursor-pointer"
                 >
                   <Sliders className="w-3.5 h-3.5" />
                 </button>
                 <div
                   tabIndex={0}
-                  className="dropdown-content z-50 card card-compact w-72 p-4 shadow-2xl bg-base-200 border border-blue_slate-500/25 mb-2 text-xs rounded-xl"
+                  className="dropdown-content z-50 card card-compact w-72 p-4 shadow-xl bg-base-200 border border-base-content/20 mb-2 text-xs rounded-xl"
                 >
                   {/* Settings Header */}
-                  <div className="flex items-center justify-between border-b border-blue_slate-500/20 pb-2.5 mb-3 font-bold">
+                  <div className="flex items-center justify-between border-b border-base-content/15 pb-2.5 mb-3 font-bold">
                     <span className="flex items-center gap-1.5 text-base-content text-xs tracking-tight">
                       <Subtitles className="w-4 h-4 text-primary" />
                       <span>Tùy chỉnh phụ đề</span>
@@ -1052,7 +1089,7 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                     <button
                       type="button"
                       onClick={resetSubtitleSettings}
-                      className="text-[10px] text-base-content/50 hover:text-primary underline cursor-pointer transition-colors"
+                      className="text-[10px] text-base-content/60 hover:text-primary underline cursor-pointer transition-colors"
                     >
                       Mặc định
                     </button>
@@ -1060,18 +1097,18 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
 
                   <div className="space-y-3">
                     {/* Vị trí phụ đề & Hướng dẫn kéo thả */}
-                    <div className="p-2.5 rounded-lg bg-base-100 border border-blue_slate-500/20 flex items-center justify-between">
+                    <div className="p-2.5 rounded-lg bg-base-100 border border-base-content/15 flex items-center justify-between">
                       <div>
                         <div className="text-[11px] font-semibold text-base-content">Vị trí hiển thị</div>
-                        <div className="text-[9px] text-base-content/60">Có thể bấm kéo trực tiếp trên video</div>
+                        <div className="text-[9px] text-base-content/65">Có thể bấm kéo trực tiếp trên video</div>
                       </div>
                       <button
                         type="button"
                         onClick={() => updateSubtitleSettings({ positionOffset: { x: 0.5, y: 0.88 }, position: 'bottom' })}
-                        className="btn btn-xs btn-outline btn-primary rounded-md text-[10px] h-6 min-h-0"
+                        className="btn btn-sm btn-outline btn-primary rounded-full text-[11px]"
                         title="Đưa phụ đề về chính giữa đáy video"
                       >
-                        Đặt lại vị trí
+                        Đặt lại
                       </button>
                     </div>
 
@@ -1080,14 +1117,14 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                       <label className="label-text text-[11px] font-semibold text-base-content/90 block mb-1">
                         Chế độ ngôn ngữ
                       </label>
-                      <div className="join w-full grid grid-cols-3">
+                      <div className="join w-full grid grid-cols-3 rounded-full overflow-hidden border border-base-content/15">
                         <button
                           type="button"
                           onClick={() => updateSubtitleSettings({ languageMode: 'original' })}
-                          className={`btn btn-xs join-item ${
+                          className={`btn btn-xs join-item border-none ${
                             subtitleSettings.languageMode === 'original'
                               ? 'btn-primary font-bold'
-                              : 'btn-ghost bg-base-100 border-blue_slate-500/25'
+                              : 'btn-ghost bg-base-100'
                           }`}
                         >
                           Gốc
@@ -1095,10 +1132,10 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         <button
                           type="button"
                           onClick={() => updateSubtitleSettings({ languageMode: 'translated' })}
-                          className={`btn btn-xs join-item ${
+                          className={`btn btn-xs join-item border-none ${
                             subtitleSettings.languageMode === 'translated'
                               ? 'btn-primary font-bold'
-                              : 'btn-ghost bg-base-100 border-blue_slate-500/25'
+                              : 'btn-ghost bg-base-100'
                           }`}
                         >
                           Bản dịch
@@ -1106,10 +1143,10 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         <button
                           type="button"
                           onClick={() => updateSubtitleSettings({ languageMode: 'bilingual' })}
-                          className={`btn btn-xs join-item ${
+                          className={`btn btn-xs join-item border-none ${
                             subtitleSettings.languageMode === 'bilingual'
                               ? 'btn-primary font-bold'
-                              : 'btn-ghost bg-base-100 border-blue_slate-500/25'
+                              : 'btn-ghost bg-base-100'
                           }`}
                         >
                           Song ngữ
@@ -1123,18 +1160,18 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         <label className="label-text text-[11px] font-semibold text-base-content/90">
                           Cỡ chữ (tỷ lệ chiều cao)
                         </label>
-                        <span className="text-[10px] font-mono text-base-content/60">
+                        <span className="text-[10px] font-mono text-base-content/70">
                           {Math.round((subtitleSettings.fontSizeScale ?? 1.0) * 100)}%
                         </span>
                       </div>
-                      <div className="join w-full grid grid-cols-3 mb-2">
+                      <div className="join w-full grid grid-cols-3 mb-2 rounded-full overflow-hidden border border-base-content/15">
                         <button
                           type="button"
                           onClick={() => updateSubtitleSettings({ fontSize: 'small', fontSizeScale: 0.82 })}
-                          className={`btn btn-xs join-item ${
+                          className={`btn btn-sm join-item border-none ${
                             subtitleSettings.fontSize === 'small'
                               ? 'btn-primary font-bold'
-                              : 'btn-ghost bg-base-100 border-blue_slate-500/25'
+                              : 'btn-ghost bg-base-100'
                           }`}
                         >
                           Nhỏ
@@ -1142,10 +1179,10 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         <button
                           type="button"
                           onClick={() => updateSubtitleSettings({ fontSize: 'medium', fontSizeScale: 1.0 })}
-                          className={`btn btn-xs join-item ${
+                          className={`btn btn-sm join-item border-none ${
                             subtitleSettings.fontSize === 'medium'
                               ? 'btn-primary font-bold'
-                              : 'btn-ghost bg-base-100 border-blue_slate-500/25'
+                              : 'btn-ghost bg-base-100'
                           }`}
                         >
                           Vừa
@@ -1153,10 +1190,10 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         <button
                           type="button"
                           onClick={() => updateSubtitleSettings({ fontSize: 'large', fontSizeScale: 1.25 })}
-                          className={`btn btn-xs join-item ${
+                          className={`btn btn-sm join-item border-none ${
                             subtitleSettings.fontSize === 'large'
                               ? 'btn-primary font-bold'
-                              : 'btn-ghost bg-base-100 border-blue_slate-500/25'
+                              : 'btn-ghost bg-base-100'
                           }`}
                         >
                           Lớn
@@ -1164,6 +1201,7 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                       </div>
                       <input
                         type="range"
+                        aria-label="Tỷ lệ cỡ chữ phụ đề"
                         min="0.60"
                         max="1.50"
                         step="0.05"
@@ -1180,12 +1218,13 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
                         <label className="label-text text-[11px] font-semibold text-base-content/90">
                           Vị trí trục dọc (Y)
                         </label>
-                        <span className="text-[10px] font-mono text-base-content/60">
+                        <span className="text-[10px] font-mono text-base-content/70">
                           {Math.round((subtitleSettings.positionOffset?.y ?? 0.88) * 100)}%
                         </span>
                       </div>
                       <input
                         type="range"
+                        aria-label="Vị trí trục dọc phụ đề"
                         min="0.15"
                         max="0.95"
                         step="0.01"
@@ -1208,14 +1247,15 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
             </div>
 
             {/* Speed Selector */}
-            <div className="join bg-base-100 border border-base-200">
+            <div className="join bg-base-100 border border-base-content/20 rounded-full overflow-hidden">
               {[0.5, 1.0, 1.25, 1.5, 2.0].map((rate) => (
                 <button
                   key={rate}
                   type="button"
                   onClick={() => handleSpeedChange(rate)}
                   disabled={!project}
-                  className={`btn btn-xs join-item px-1.5 font-mono ${
+                  title={`Tốc độ phát ${rate}x`}
+                  className={`btn btn-sm join-item px-2 border-none font-mono cursor-pointer ${
                     playbackRate === rate
                       ? 'btn-primary font-bold'
                       : 'btn-ghost'
@@ -1231,10 +1271,11 @@ export const VideoWorkspace: React.FC<VideoWorkspaceProps> = ({
               type="button"
               onClick={toggleFullscreen}
               disabled={!project}
+              aria-label="Xem toàn màn hình"
               title="Xem toàn màn hình"
-              className="btn btn-ghost btn-sm btn-square"
+              className="btn btn-ghost btn-sm btn-circle cursor-pointer"
             >
-              <Maximize2 className="w-4 h-4" />
+              <Maximize2 className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>

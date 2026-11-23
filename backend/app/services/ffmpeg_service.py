@@ -2,18 +2,22 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import subprocess
 import wave
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from app.config import settings
-from app.schemas import ROIConfig, VideoMetadata
+from app.schemas import MAX_PAD_RATIO, ROIConfig, VideoMetadata
 from app.services.hardware import resolve_ffmpeg_executable
+
+logger = logging.getLogger(__name__)
 
 
 class MediaProcessingError(RuntimeError):
@@ -65,6 +69,10 @@ def probe_video(video_path: str | Path) -> VideoMetadata:
     audio_codec: str | None = None
     audio_sample_rate: int | None = None
     audio_channels: int | None = None
+    r_frame_rate: str | None = None
+    avg_frame_rate: str | None = None
+    time_base: str | None = None
+    stream_start_time: float = 0.0
 
     # Primary probe via PyAV (fast, accurate container inspection including audio stream)
     try:
@@ -79,11 +87,34 @@ def probe_video(video_path: str | Path) -> VideoMetadata:
                 width = int(v_stream.codec_context.width or v_stream.width or 0)
                 height = int(v_stream.codec_context.height or v_stream.height or 0)
                 video_codec = v_stream.codec_context.name
+                if v_stream.base_rate:
+                    r_frame_rate = (
+                        f"{v_stream.base_rate.numerator}/{v_stream.base_rate.denominator}"
+                        if hasattr(v_stream.base_rate, "numerator")
+                        else str(v_stream.base_rate)
+                    )
+                if v_stream.average_rate:
+                    avg_frame_rate = (
+                        f"{v_stream.average_rate.numerator}/{v_stream.average_rate.denominator}"
+                        if hasattr(v_stream.average_rate, "numerator")
+                        else str(v_stream.average_rate)
+                    )
+                if v_stream.time_base:
+                    time_base = (
+                        f"{v_stream.time_base.numerator}/{v_stream.time_base.denominator}"
+                        if hasattr(v_stream.time_base, "numerator")
+                        else str(v_stream.time_base)
+                    )
+                if v_stream.start_time is not None and v_stream.time_base:
+                    stream_start_time = float(v_stream.start_time * float(v_stream.time_base))
+                elif container.start_time is not None:
+                    stream_start_time = float(container.start_time) / float(av.time_base)
+
                 if v_stream.average_rate:
                     fps = float(v_stream.average_rate)
                 elif v_stream.base_rate:
                     fps = float(v_stream.base_rate)
-                if duration_sec <= 0 and v_stream.duration and v_stream.time_base:
+                if v_stream.duration and v_stream.time_base:
                     duration_sec = float(v_stream.duration * v_stream.time_base)
                 if v_stream.frames and v_stream.frames > 0:
                     frame_count = int(v_stream.frames)
@@ -135,6 +166,10 @@ def probe_video(video_path: str | Path) -> VideoMetadata:
         audio_codec=audio_codec,
         audio_sample_rate=audio_sample_rate,
         audio_channels=audio_channels,
+        r_frame_rate=r_frame_rate,
+        avg_frame_rate=avg_frame_rate,
+        time_base=time_base,
+        stream_start_time=round(stream_start_time, 6),
     )
 
 
@@ -240,17 +275,33 @@ def crop_and_mask_roi(
     frame_bgr: np.ndarray,
     roi_config: ROIConfig,
     pad_top_ratio: float = 0.0,
+    pad_bottom_ratio: float = 0.0,
+    pad_left_ratio: float = 0.0,
+    pad_right_ratio: float = 0.0,
 ) -> np.ndarray:
     """
     Crop the main ROI from a full BGR frame and paint black rectangles over any
     Exclusion Masks (watermarks/logos) overlapping the ROI.
-    Optionally expands the top edge upward by pad_top_ratio to avoid clipping top diacritics / 2nd line.
+    Optionally expands edges by pad_*_ratio to avoid clipping diacritics / border characters.
     """
     h, w = frame_bgr.shape[:2]
     rx1, ry1, rx2, ry2 = roi_config.main_roi.to_pixel_rect(w, h)
+    roi_w = rx2 - rx1
+    roi_h = ry2 - ry1
+
     if pad_top_ratio > 0.0:
-        pad_h = int((ry2 - ry1) * max(0.0, min(0.35, float(pad_top_ratio))))
-        ry1 = max(0, ry1 - pad_h)
+        pad_t = int(roi_h * max(0.0, min(MAX_PAD_RATIO, float(pad_top_ratio))))
+        ry1 = max(0, ry1 - pad_t)
+    if pad_bottom_ratio > 0.0:
+        pad_b = int(roi_h * max(0.0, min(MAX_PAD_RATIO, float(pad_bottom_ratio))))
+        ry2 = min(h, ry2 + pad_b)
+    if pad_left_ratio > 0.0:
+        pad_l = int(roi_w * max(0.0, min(MAX_PAD_RATIO, float(pad_left_ratio))))
+        rx1 = max(0, rx1 - pad_l)
+    if pad_right_ratio > 0.0:
+        pad_r = int(roi_w * max(0.0, min(MAX_PAD_RATIO, float(pad_right_ratio))))
+        rx2 = min(w, rx2 + pad_r)
+
     cropped = frame_bgr[ry1:ry2, rx1:rx2]
 
     if not roi_config.exclusion_masks:
@@ -306,6 +357,152 @@ def extract_frame_jpeg(
         cap.release()
 
 
+def extract_video_pts_table(video_path: str | Path, stream_index: int = 0) -> list[float]:
+    """
+    Extract presentation timestamps (PTS) in seconds for all video frames via PyAV packet demuxing.
+
+    Key technical features:
+    1. High-throughput packet demuxing (~40ms for 4,928 frames), avoiding expensive video decoding.
+    2. Playback zero-normalization: shifts timestamps by stream_start_time so frame 0 starts at 0.0s.
+    3. B-frame presentation reordering: sorts timestamps from DTS decode order into PTS presentation order.
+    4. Guarantees strict monotonicity for binary search boundary refinement algorithms.
+    5. Safe fallback: returns empty list [] on any container/stream/read failure so callers fall back to (frame_idx / fps).
+    """
+    try:
+        path = resolve_media_path(video_path)
+    except Exception:
+        path = Path(str(video_path).strip())
+
+    if not path.exists() or not path.is_file():
+        logger.warning(f"PTS extraction failed: file not found: {video_path}")
+        return []
+
+    try:
+        import av
+
+        with av.open(str(path)) as container:
+            if not container.streams.video or stream_index >= len(container.streams.video):
+                logger.warning(
+                    f"PTS extraction failed: no video stream at index {stream_index} in {path.name}"
+                )
+                return []
+
+            v_stream = container.streams.video[stream_index]
+            if not v_stream.time_base or float(v_stream.time_base) <= 0:
+                logger.warning(f"PTS extraction failed: invalid time_base in {path.name}")
+                return []
+
+            tb = float(v_stream.time_base)
+
+            # Compute stream start time in seconds for playback zero-normalization
+            if v_stream.start_time is not None:
+                stream_start_sec = float(v_stream.start_time * tb)
+            elif container.start_time is not None:
+                stream_start_sec = float(container.start_time) / float(av.time_base)
+            else:
+                stream_start_sec = 0.0
+
+            # Demux packets from video stream
+            # Demux yields packets in decode order (DTS).
+            # We collect PTS and sort them to obtain presentation order (PTS) for B-frames.
+            pts_raw: list[int] = []
+            for packet in container.demux(v_stream):
+                if packet.pts is not None:
+                    pts_raw.append(packet.pts)
+                elif packet.dts is not None and packet.size > 0:
+                    pts_raw.append(packet.dts)
+
+            if not pts_raw:
+                logger.warning(f"PTS extraction failed: no packet timestamps found in {path.name}")
+                return []
+
+            # Reorder B-frames into presentation order
+            pts_raw.sort()
+
+            # Normalize to playback zero and microsecond precision
+            pts_table = [round(max(0.0, float(p * tb) - stream_start_sec), 6) for p in pts_raw]
+
+            # Enforce strict monotonicity if jitter or duplicate PTS exists in edge-case streams
+            for i in range(len(pts_table) - 1):
+                if pts_table[i + 1] <= pts_table[i]:
+                    pts_table[i + 1] = round(pts_table[i] + 1e-6, 6)
+
+            return pts_table
+
+    except Exception as e:
+        logger.warning(f"PyAV PTS extraction exception on {video_path}: {e}")
+        return []
+
+
+@lru_cache(maxsize=1)
+def get_ffmpeg_passthrough_args(ffmpeg_exe: str | None = None) -> list[str]:
+    """
+    Return appropriate FFmpeg passthrough CLI arguments depending on FFmpeg version.
+    - FFmpeg >= 5.1: ['-fps_mode', 'passthrough']
+    - FFmpeg < 5.1 (legacy): ['-vsync', '0']
+    Cached per process lifetime so version probing executes only once.
+    """
+    if ffmpeg_exe is None:
+        ffmpeg_exe = resolve_ffmpeg_executable()
+    if not ffmpeg_exe:
+        return ["-fps_mode", "passthrough"]
+
+    try:
+        res = subprocess.run(
+            [ffmpeg_exe, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout:
+            match = re.search(r"ffmpeg version (\d+)\.(\d+)", res.stdout)
+            if match:
+                major, minor = int(match.group(1)), int(match.group(2))
+                if (major, minor) < (5, 1):
+                    return ["-vsync", "0"]
+                return ["-fps_mode", "passthrough"]
+            if "fps_mode" in res.stdout:
+                return ["-fps_mode", "passthrough"]
+    except Exception:
+        pass
+
+    return ["-fps_mode", "passthrough"]
+
+
+def get_timestamp_for_frame(
+    frame_idx: int, pts_table: list[float] | None, fallback_fps: float = 25.0
+) -> float:
+    """
+    Safely retrieve the presentation timestamp (in seconds) for a given frame index.
+
+    Guarantees:
+    - O(1) direct lookup if 0 <= frame_idx < len(pts_table).
+    - Monotonic smooth linear extrapolation if frame_idx >= len(pts_table) (no IndexError).
+    - Returns 0.0 if frame_idx <= 0.
+    - Fallback to frame_idx / fallback_fps if pts_table is None or empty.
+    """
+    fps = max(1.0, float(fallback_fps))
+    if frame_idx <= 0:
+        return 0.0
+
+    if not pts_table:
+        return round(frame_idx / fps, 3)
+
+    if frame_idx < len(pts_table):
+        return round(pts_table[frame_idx], 3)
+
+    # Safe extrapolation for boundary frames (e.g. last_text_idx + 1 at the end of video)
+    last_pts = pts_table[-1]
+    step = (
+        (pts_table[-1] - pts_table[0]) / max(1, len(pts_table) - 1)
+        if len(pts_table) > 1
+        else (1.0 / fps)
+    )
+    extra_frames = frame_idx - (len(pts_table) - 1)
+    return round(last_pts + extra_frames * step, 3)
+
+
 class VideoROIStream:
     """
     High-throughput video stream reader yielding sequentially cropped BGR frames (ROI + exclusion masks).
@@ -319,6 +516,10 @@ class VideoROIStream:
         roi_config: ROIConfig,
         meta: VideoMetadata | None = None,
         pad_top_ratio: float = 0.0,
+        pad_bottom_ratio: float = 0.0,
+        pad_left_ratio: float = 0.0,
+        pad_right_ratio: float = 0.0,
+        pts_table: list[float] | None = None,
     ) -> None:
         self.path = resolve_media_path(video_path)
         if not self.path.exists():
@@ -330,17 +531,35 @@ class VideoROIStream:
         self.video_w = int(self.meta.width or 1280)
         self.video_h = int(self.meta.height or 720)
         self.pad_top_ratio = float(pad_top_ratio)
+        self.pad_bottom_ratio = float(pad_bottom_ratio)
+        self.pad_left_ratio = float(pad_left_ratio)
+        self.pad_right_ratio = float(pad_right_ratio)
+        self.pts_table = pts_table
 
         # Compute ROI bounding rectangle in pixels
         rx1, ry1, rx2, ry2 = self.roi_config.main_roi.to_pixel_rect(self.video_w, self.video_h)
-        # Allow vertical safety margin (pad upwards by pad_top_ratio to not clip top diacritics / 2nd line)
+        roi_w = rx2 - rx1
+        roi_h = ry2 - ry1
+
+        # Allow safety margin padding clamped to [0.0, MAX_PAD_RATIO]
         if pad_top_ratio > 0.0:
-            pad_h = int((ry2 - ry1) * max(0.0, min(0.35, float(pad_top_ratio))))
-            ry1 = max(0, ry1 - pad_h)
+            pad_t = int(roi_h * max(0.0, min(MAX_PAD_RATIO, float(pad_top_ratio))))
+            ry1 = max(0, ry1 - pad_t)
+        if pad_bottom_ratio > 0.0:
+            pad_b = int(roi_h * max(0.0, min(MAX_PAD_RATIO, float(pad_bottom_ratio))))
+            ry2 = min(self.video_h, ry2 + pad_b)
+        if pad_left_ratio > 0.0:
+            pad_l = int(roi_w * max(0.0, min(MAX_PAD_RATIO, float(pad_left_ratio))))
+            rx1 = max(0, rx1 - pad_l)
+        if pad_right_ratio > 0.0:
+            pad_r = int(roi_w * max(0.0, min(MAX_PAD_RATIO, float(pad_right_ratio))))
+            rx2 = min(self.video_w, rx2 + pad_r)
+
         # Ensure even width & height for YUV/BGR codecs in FFmpeg
         rw = max(16, (rx2 - rx1) & ~1)
         rh = max(16, (ry2 - ry1) & ~1)
-        self.rx1, self.ry1 = rx1, ry1
+        self.rx1 = max(0, min(rx1, self.video_w - rw))
+        self.ry1 = max(0, min(ry1, self.video_h - rh))
         self.rw, self.rh = rw, rh
 
         # Precompute exclusion mask boxes relative to the cropped ROI
@@ -368,11 +587,17 @@ class VideoROIStream:
         # Try initializing FFmpeg pipe first
         ffmpeg_exe = resolve_ffmpeg_executable()
         if ffmpeg_exe:
+            passthrough_flags = get_ffmpeg_passthrough_args(ffmpeg_exe)
+            env_ff_threads = os.environ.get("SUBMAGIC_FFMPEG_THREADS", "").strip()
+            ffmpeg_threads = env_ff_threads if (env_ff_threads.isdigit() and int(env_ff_threads) >= 1) else "2"
             cmd = [
                 ffmpeg_exe,
                 "-nostdin",
+                "-threads",
+                ffmpeg_threads,
                 "-i",
                 str(self.path),
+                *passthrough_flags,
                 "-vf",
                 f"crop={rw}:{rh}:{rx1}:{ry1}",
                 "-f",
@@ -405,7 +630,7 @@ class VideoROIStream:
         Returns (frame_index, timestamp_sec, cropped_roi_bgr) or None when stream ends.
         """
         current_idx = self.frame_idx
-        timestamp_sec = current_idx / self.fps
+        timestamp_sec = get_timestamp_for_frame(current_idx, self.pts_table, self.fps)
 
         if self.proc is not None and self.proc.stdout is not None:
             raw_bytes = self.proc.stdout.read(self.frame_bytes)
@@ -431,7 +656,14 @@ class VideoROIStream:
                     for ix1, iy1, ix2, iy2 in self.ex_rects:
                         roi[iy1:iy2, ix1:ix2] = 0
             else:
-                roi = crop_and_mask_roi(full_frame, self.roi_config, pad_top_ratio=self.pad_top_ratio)
+                roi = crop_and_mask_roi(
+                    full_frame,
+                    self.roi_config,
+                    pad_top_ratio=self.pad_top_ratio,
+                    pad_bottom_ratio=self.pad_bottom_ratio,
+                    pad_left_ratio=self.pad_left_ratio,
+                    pad_right_ratio=self.pad_right_ratio,
+                )
             self.frame_idx += 1
             return current_idx, timestamp_sec, roi
 

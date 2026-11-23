@@ -93,7 +93,9 @@ export const SubtitleOverlay: React.FC<SubtitleOverlayProps> = ({
   const sortedSegmentsRef = useRef<SubtitleSegment[]>(sortedSegments);
   useEffect(() => {
     sortedSegmentsRef.current = sortedSegments;
-  }, [sortedSegments]);
+    const video = videoRef.current;
+    setActiveSegments(video ? findActiveSegments(sortedSegments, video.currentTime) : []);
+  }, [sortedSegments, videoRef]);
 
   // Frame-accurate synchronization via requestVideoFrameCallback or requestAnimationFrame
   useEffect(() => {

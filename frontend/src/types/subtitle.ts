@@ -100,8 +100,11 @@ export interface SubtitleSegment {
   start_time: number;
   end_time: number;
   text: string;
+  original_text?: string | null;
+  normalized_text?: string | null;
   translated_text?: string | null;
   confidence: number;
+  is_low_confidence?: boolean;
   source: 'stt' | 'ocr' | 'manual';
   crop_image_url?: string | null;
   words?: WordTimestamp[];
@@ -114,8 +117,11 @@ export interface SubtitleSegmentUpdate {
   start_time?: number;
   end_time?: number;
   text?: string;
+  original_text?: string | null;
+  normalized_text?: string | null;
   translated_text?: string | null;
   confidence?: number;
+  is_low_confidence?: boolean;
   crop_image_url?: string | null;
 }
 
@@ -295,8 +301,31 @@ export interface ProjectDetail extends ProjectSummary {
 export interface ExportRequest {
   format: ExportFormat;
   bilingual_layout: BilingualLayout;
+  script_variant?: 'original' | 'simplified' | 'traditional';
   include_timestamps_in_txt: boolean;
   save_to_disk_path?: string | null;
+}
+
+export interface GeminiOCREstimateRequest {
+  project_id: string;
+  max_lines?: number;
+}
+
+export interface GeminiOCREstimateResponse {
+  total_segments: number;
+  low_confidence_segments: number;
+  lines_to_process: number;
+  estimated_prompt_tokens: number;
+  estimated_completion_tokens: number;
+  estimated_total_tokens: number;
+  estimated_cost_usd: number;
+}
+
+export interface GeminiOCRExecuteRequest {
+  project_id: string;
+  max_lines?: number;
+  gemini_api_key?: string | null;
+  model?: string | null;
 }
 
 /**
@@ -306,6 +335,7 @@ export interface WebSocketEvent {
   event:
     | 'job_started'
     | 'job_progress'
+    | 'warning'
     | 'segment_created'
     | 'segment_updated'
     | 'job_completed'

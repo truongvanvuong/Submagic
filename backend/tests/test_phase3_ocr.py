@@ -784,3 +784,87 @@ def test_stabilizing_fade_in_out_karaoke_flush_and_vietocr_fallback(monkeypatch)
     assert tight_res.text == "Phụ đề dòng đơn sát viền"
     assert tight_res.confidence == 0.96
 
+
+def test_white_background_outlined_subtitle_mask_and_multilang_fragment_bridging():
+    """
+    Requirements 1 & 2A:
+    1. Near-white background (luma ~225) with white outlined subtitle occupying <5% of ROI
+       (so p95 - p50 < 15) must NOT early-exit to zeros; it must extract the subtitle strokes.
+    2. Blank near-white background must still produce zero text activity.
+    3. Language-agnostic fragment bridging (is_same_subtitle_fragment) must bridge noisy split
+       fragments in English, Vietnamese, and Chinese while keeping distinct numbered sentences separate.
+    """
+    from app.services.ocr_pipeline import is_same_subtitle_fragment
+
+    # 1. Near-white background (225) with short white subtitle (254) and dark outline (20)
+    white_bg_roi = np.full((96, 540, 3), 225, dtype=np.uint8)
+    assert has_text_activity(extract_text_binary_mask(white_bg_roi, adaptive=True)) is False
+
+    cv2.putText(
+        white_bg_roi,
+        "Short Text",
+        (200, 62),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (20, 20, 20),
+        4,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        white_bg_roi,
+        "Short Text",
+        (200, 62),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (254, 254, 254),
+        2,
+        cv2.LINE_AA,
+    )
+    mask = extract_text_binary_mask(white_bg_roi, adaptive=True)
+    assert has_text_activity(mask) is True
+
+    # 2. Bright yellow (0, 255, 255) and cyan (255, 255, 0) subtitles on bright white/gray backgrounds
+    for bg_val, fg_color, with_outline in [
+        (225, (0, 255, 255), True),
+        (225, (255, 255, 0), True),
+        (215, (0, 255, 255), False),
+        (175, (255, 255, 0), False),
+    ]:
+        color_roi = np.full((96, 540, 3), bg_val, dtype=np.uint8)
+        if with_outline:
+            cv2.putText(
+                color_roi,
+                "Short Text",
+                (200, 62),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.75,
+                (20, 20, 20),
+                4,
+                cv2.LINE_AA,
+            )
+        cv2.putText(
+            color_roi,
+            "Short Text",
+            (200, 62),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            fg_color,
+            2,
+            cv2.LINE_AA,
+        )
+        assert has_text_activity(extract_text_binary_mask(color_roi, adaptive=True)) is True
+
+    # 3. Multi-language fragment bridging checks
+    assert is_same_subtitle_fragment(
+        "work my ass off to learnE English",
+        "work my ass off to learn E English",
+    ) is True
+    assert is_same_subtitle_fragment(
+        "Ngươi ch i chưa c chết?",
+        "Người chưa cai chết?",
+    ) is True
+    assert is_same_subtitle_fragment(
+        "Cảnh quay thứ nhất",
+        "Cảnh quay thứ hai",
+    ) is False
+

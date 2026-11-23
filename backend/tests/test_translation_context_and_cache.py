@@ -268,3 +268,126 @@ async def test_llm_estimation_api(tmp_path: Path):
     assert data["segments_to_translate"] == 10
     assert data["estimated_total_tokens"] > 0
     assert data["estimated_cost_usd"] >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_ai_polish_strictly_preserves_original_text(tmp_path: Path):
+    """
+    Requirement 3: When running AI Polish (fix_ocr_spelling=True), original text (text and original_text)
+    must be strictly preserved while only translated_text is improved/polished.
+    """
+    proj = await db.create_project(name="AI Polish Preserve Original", video_path="dummy.mp4")
+    seg1 = SubtitleSegment(
+        project_id=proj.id,
+        index=1,
+        start_time=1.0,
+        end_time=3.0,
+        text="しかしながら黄崇嘏は全く怯まなかった",
+        original_text="しかしながら黄崇嘏は全く怯まなかった",
+        translated_text="Tuy nhiên Hoàng Sùng Hỗ không sợ",
+    )
+    seg2 = SubtitleSegment(
+        project_id=proj.id,
+        index=2,
+        start_time=3.2,
+        end_time=5.0,
+        text="Work my ass off to learn English",
+        original_text="Work my ass off to learn English",
+        translated_text="Học tiếng Anh chăm chỉ",
+    )
+    await db.insert_segment(seg1)
+    await db.insert_segment(seg2)
+
+    def mock_polish_batch(batch, fix_ocr_spelling, translate_to, api_key, **kwargs):
+        assert fix_ocr_spelling is True
+        # Even if Gemini returns a modified/translated field 't', original text must never be overwritten
+        return [
+            {
+                "id": batch[0].id,
+                "t": "Bản gốc bị dịch nhầm sang tiếng Việt",
+                "tr": "Thế nhưng Hoàng Sùng Hỗ lại chẳng hề nao núng.",
+            },
+            {
+                "id": batch[1].id,
+                "t": "Cày cuốc học tiếng Anh",
+                "tr": "Nỗ lực hết mình để học giỏi tiếng Anh.",
+            },
+        ]
+
+    req = LLMJobRequest(
+        project_id=proj.id,
+        gemini_api_key="test-key",
+        fix_ocr_spelling=True,
+        translate_to="vi",
+        force_retranslate=True,
+    )
+
+    async def noop_emit(ev):
+        pass
+
+    with patch.object(llm_service, "_call_gemini_batch_postprocess", mock_polish_batch):
+        res = await run_llm_postprocess_pipeline(req, job_id="job-polish", emit=noop_emit)
+
+    assert len(res) == 2
+    assert res[0].text == "しかしながら黄崇嘏は全く怯まなかった"
+    assert res[0].original_text == "しかしながら黄崇嘏は全く怯まなかった"
+    assert res[0].translated_text == "Thế nhưng Hoàng Sùng Hỗ lại chẳng hề nao núng"
+    assert res[1].text == "Work my ass off to learn English"
+    assert res[1].original_text == "Work my ass off to learn English"
+    assert res[1].translated_text == "Nỗ lực hết mình để học giỏi tiếng Anh"
+
+
+@pytest.mark.asyncio
+async def test_cjk_untranslated_drift_retried_and_corrupted_cache_ignored(tmp_path: Path):
+    """
+    Requirement 2B: When translating CJK subtitles to Vietnamese/English, any line that Gemini
+    leaves in Chinese/CJK must be detected as untranslated, retried automatically, and never
+    served from a corrupted cache entry.
+    """
+    proj = await db.create_project(name="CJK Drift Retry Proj", video_path="dummy.mp4")
+    seg1 = SubtitleSegment(project_id=proj.id, index=1, start_time=0.0, end_time=1.5, text="然而")
+    seg2 = SubtitleSegment(project_id=proj.id, index=2, start_time=1.6, end_time=3.5, text="娄逞被逼无奈")
+    await db.insert_segment(seg1)
+    await db.insert_segment(seg2)
+
+    # Seed a corrupted CJK-in-Vietnamese entry in translation_cache
+    await db.save_cached_translations([
+        ("然而", "vi", "historical", "default", "v1.0", "然而"),
+    ])
+
+    call_count = 0
+
+    def mock_call_batch(batch, fix_ocr_spelling, translate_to, api_key, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call translates seg1 properly (ignoring corrupted cache!) but leaves seg2 in Chinese
+            return [
+                {"id": batch[0].id, "tr": "Tuy nhiên."},
+                {"id": batch[1].id, "tr": "娄逞被逼无奈"},
+            ]
+    # Second call (automatic retry for seg2) returns proper Vietnamese using index-based id '0'
+        return [
+            {"id": "0", "tr": "Lâu Sính bị ép đến đường cùng."},
+        ]
+
+    req = LLMJobRequest(
+        project_id=proj.id,
+        gemini_api_key="test-key",
+        fix_ocr_spelling=False,
+        translate_to="vi",
+        translation_context=TranslationContext.HISTORICAL,
+        force_retranslate=False,
+    )
+
+    async def noop_emit(ev):
+        pass
+
+    with patch.object(llm_service, "_call_gemini_batch_postprocess", mock_call_batch):
+        res = await run_llm_postprocess_pipeline(req, job_id="job-cjk-retry", emit=noop_emit)
+
+    assert call_count == 2
+    assert res[0].translated_text == "Tuy nhiên"
+    assert res[1].translated_text == "Lâu Sính bị ép đến đường cùng"
+    assert llm_service._is_valid_translation("ありがとうございます", "ありがとうございます", "vi") is False
+    assert llm_service._is_valid_translation("안녕하세요", "안녕하세요", "vi") is False

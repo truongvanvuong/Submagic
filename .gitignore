@@ -44,8 +44,11 @@ frontend/dist/
 dist/
 .vite/
 frontend/.vite/
+*.tsbuildinfo
+frontend/*.tsbuildinfo
 
 # Logs Node.js
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -71,6 +74,7 @@ frontend/.env.*.local
 # Dữ liệu nội bộ sinh ra khi xử lý (video tải lên, crops, audio, exports)
 backend/data/
 data/
+Sampales/
 
 # Cơ sở dữ liệu SQLite
 *.sqlite3
@@ -118,6 +122,8 @@ data/
 .pytest_cache/
 backend/.pytest_cache/
 scripts/__pycache__/
+.mypy_cache/
+.ruff_cache/
 .coverage
 .coverage.*
 htmlcov/

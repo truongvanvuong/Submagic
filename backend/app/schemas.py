@@ -28,6 +28,12 @@ class ExportFormat(str, Enum):
     ASS = "ass"
 
 
+class ScriptVariant(str, Enum):
+    ORIGINAL = "original"
+    SIMPLIFIED = "simplified"
+    TRADITIONAL = "traditional"
+
+
 class BilingualLayout(str, Enum):
     NONE = "none"
     ORIGINAL_TOP = "original_top"
@@ -65,6 +71,38 @@ class VideoMetadata(BaseModel):
     audio_codec: str | None = None
     audio_sample_rate: int | None = None
     audio_channels: int | None = None
+    r_frame_rate: str | None = None
+    avg_frame_rate: str | None = None
+    time_base: str | None = None
+    stream_start_time: float | None = 0.0
+
+    @property
+    def r_fps(self) -> float | None:
+        """Parse r_frame_rate rational string (e.g. '30/1', '24000/1001') into float."""
+        if not self.r_frame_rate:
+            return None
+        try:
+            if "/" in self.r_frame_rate:
+                num, den = self.r_frame_rate.split("/")
+                den_f = float(den)
+                return float(num) / den_f if den_f != 0 else None
+            return float(self.r_frame_rate)
+        except Exception:
+            return None
+
+    @property
+    def avg_fps(self) -> float | None:
+        """Parse avg_frame_rate rational string (e.g. '30/1', '29970/1000') into float."""
+        if not self.avg_frame_rate:
+            return None
+        try:
+            if "/" in self.avg_frame_rate:
+                num, den = self.avg_frame_rate.split("/")
+                den_f = float(den)
+                return float(num) / den_f if den_f != 0 else None
+            return float(self.avg_frame_rate)
+        except Exception:
+            return None
 
 
 class NormalizedBox(BaseModel):
@@ -109,8 +147,11 @@ class SubtitleSegment(BaseModel):
     start_time: float = Field(ge=0.0, description="Start timestamp in seconds")
     end_time: float = Field(ge=0.0, description="End timestamp in seconds")
     text: str
+    original_text: str | None = None
+    normalized_text: str | None = None
     translated_text: str | None = None
     confidence: float = 1.0
+    is_low_confidence: bool = False
     source: Literal["stt", "ocr", "manual"] = "stt"
     crop_image_url: str | None = None
     words: list[WordTimestamp] = Field(default_factory=list)
@@ -120,8 +161,11 @@ class SubtitleSegmentUpdate(BaseModel):
     start_time: float | None = None
     end_time: float | None = None
     text: str | None = None
+    original_text: str | None = None
+    normalized_text: str | None = None
     translated_text: str | None = None
     confidence: float | None = None
+    is_low_confidence: bool | None = None
     crop_image_url: str | None = None
 
 
@@ -152,6 +196,9 @@ class STTJobRequest(BaseModel):
     gemini_api_key: str | None = None
 
 
+MAX_PAD_RATIO: float = 0.35
+
+
 class OCRJobRequest(BaseModel):
     project_id: str
     language: Literal["auto", "vi", "en", "ch", "ja", "ko", "multi"] = "auto"
@@ -159,13 +206,46 @@ class OCRJobRequest(BaseModel):
     sample_fps: float = Field(default=3.0, ge=1.0, le=30.0)
     roi_config: ROIConfig = Field(default_factory=ROIConfig)
     luma_threshold: int = Field(default=185, ge=50, le=255)
+    adaptive_threshold: bool = Field(
+        default=True,
+        description="Enable Otsu/percentile adaptive thresholding on ROI luminance",
+    )
+    max_stroke_density: float = Field(
+        default=0.85,
+        ge=0.50,
+        le=0.95,
+        description="Upper bound for verified text stroke density",
+    )
     stability_frames: int = Field(default=1, ge=0, le=5)
     visual_diff_threshold: float = Field(default=0.14, ge=0.01, le=0.90)
+    mask_visual_diff_threshold: float = Field(
+        default=0.25,
+        ge=0.05,
+        le=0.90,
+        description="Threshold for mask visual dissimilarity guard blocking segment merges",
+    )
     fuzzy_match_threshold: float = Field(default=85.0, ge=50.0, le=100.0)
     max_merge_gap_sec: float = Field(default=0.20, ge=0.0, le=2.0)
     save_crop_images: bool = True
     diagnostic_logging: bool = False
-    pad_top_ratio: float = Field(default=0.10, ge=0.0, le=0.50)
+    pad_top_ratio: float = Field(default=0.10, ge=0.0, le=MAX_PAD_RATIO)
+    pad_bottom_ratio: float = Field(default=0.0, ge=0.0, le=MAX_PAD_RATIO)
+    pad_left_ratio: float = Field(default=0.0, ge=0.0, le=MAX_PAD_RATIO)
+    pad_right_ratio: float = Field(default=0.0, ge=0.0, le=MAX_PAD_RATIO)
+    rapidocr_text_score: float = Field(default=0.5, ge=0.1, le=1.0)
+    rapidocr_box_thresh: float = Field(default=0.5, ge=0.1, le=1.0)
+    rapidocr_thresh: float = Field(default=0.3, ge=0.1, le=0.9)
+    rapidocr_unclip_ratio: float = Field(default=1.6, ge=1.0, le=3.0)
+    use_gemini_fallback: bool = Field(
+        default=False,
+        description="Selectively run Gemini Vision OCR fallback exclusively on low-confidence segments",
+    )
+    max_gemini_ocr_lines: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum low-confidence segments allowed for Gemini OCR fallback",
+    )
     gemini_api_key: str | None = None
 
 
@@ -196,6 +276,32 @@ class LLMJobRequest(BaseModel):
         default=None,
         description="Optional Gemini model override (e.g., 'gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-2.5-flash')",
     )
+    prompt_version: str = Field(
+        default="v1.0",
+        description="Prompt template or engine version for composite cache key partitioning",
+    )
+
+
+class GeminiOCREstimateRequest(BaseModel):
+    project_id: str
+    max_lines: int = Field(default=20, ge=1, le=100)
+
+
+class GeminiOCREstimateResponse(BaseModel):
+    total_segments: int
+    low_confidence_segments: int
+    lines_to_process: int
+    estimated_prompt_tokens: int
+    estimated_completion_tokens: int
+    estimated_total_tokens: int
+    estimated_cost_usd: float
+
+
+class GeminiOCRExecuteRequest(BaseModel):
+    project_id: str
+    max_lines: int = Field(default=20, ge=1, le=100)
+    gemini_api_key: str | None = None
+    model: str | None = None
 
 
 class LLMEstimateRequest(BaseModel):
@@ -246,6 +352,7 @@ class ProjectDetail(ProjectSummary):
 class ExportRequest(BaseModel):
     format: ExportFormat = ExportFormat.SRT
     bilingual_layout: BilingualLayout = BilingualLayout.NONE
+    script_variant: ScriptVariant = ScriptVariant.ORIGINAL
     include_timestamps_in_txt: bool = False
     save_to_disk_path: str | None = None
 
@@ -259,6 +366,7 @@ class WebSocketEvent(BaseModel):
         "job_completed",
         "job_failed",
         "job_cancelled",
+        "warning",
     ]
     project_id: str
     job_id: str | None = None

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Awaitable, Callable
 
@@ -29,11 +30,61 @@ from app.schemas import (
     TranslationContext,
     WebSocketEvent,
 )
+from app.utils.cjk_normalizer import convert_t2s
 from app.utils.subtitle_formatter import remove_trailing_period
 
 logger = logging.getLogger(__name__)
 
 EventCallback = Callable[[WebSocketEvent], Awaitable[None]]
+
+CJK_IDEOGRAPH_RE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]"
+)
+
+TARGET_LANG_NAMES: dict[str, str] = {
+    "vi": "Tiếng Việt (Vietnamese)",
+    "en": "Tiếng Anh (English)",
+    "zh": "Tiếng Trung (Chinese)",
+    "ja": "Tiếng Nhật (Japanese)",
+    "ko": "Tiếng Hàn (Korean)",
+    "fr": "Tiếng Pháp (French)",
+    "de": "Tiếng Đức (German)",
+    "es": "Tiếng Tây Ban Nha (Spanish)",
+    "ru": "Tiếng Nga (Russian)",
+    "th": "Tiếng Thái (Thai)",
+}
+
+
+def _resolve_target_lang_name(translate_to: str | None) -> str:
+    """Resolve short language code (e.g. 'vi', 'en') to an explicit human-readable language name."""
+    code = (translate_to or "vi").strip()
+    return TARGET_LANG_NAMES.get(code.lower(), code)
+
+
+def _is_valid_translation(
+    source_text: str | None,
+    translated_text: str | None,
+    target_lang: str | None,
+) -> bool:
+    """
+    Validate that a translated subtitle line is non-empty and actually translated into target_lang
+    (e.g. rejects untranslated Chinese/CJK output when target_lang is Vietnamese or English).
+    """
+    if translated_text is None:
+        return False
+    t_str = str(translated_text).strip()
+    if not t_str:
+        return False
+    s_str = (source_text or "").strip()
+    lang_code = (target_lang or "vi").strip().lower()
+    is_cjk_target = any(
+        k in lang_code
+        for k in ("zh", "ch", "ja", "ko", "chinese", "japanese", "korean", "trung", "nhật", "hàn")
+    )
+    if not is_cjk_target and CJK_IDEOGRAPH_RE.search(s_str):
+        if CJK_IDEOGRAPH_RE.search(t_str):
+            return False
+    return True
 
 
 def _get_context_instruction(context: TranslationContext | str | None) -> str:
@@ -93,17 +144,21 @@ def _call_gemini_batch_postprocess(
 
     client = genai.Client(api_key=api_key)
     context_rules = _get_context_instruction(translation_context)
+    effective_target_lang = translate_to or ("vi" if fix_ocr_spelling else None)
+    target_lang_label = _resolve_target_lang_name(effective_target_lang)
 
     # Prepare batch payload with display duration constraint
-    payload_items = [
-        {
+    payload_items = []
+    for idx, seg in enumerate(batch):
+        item_dict: dict[str, object] = {
             "id": seg.id or f"idx_{idx}",
             "i": idx,
             "t": seg.text,
             "duration": max(0.5, round(seg.end_time - seg.start_time, 2)),
         }
-        for idx, seg in enumerate(batch)
-    ]
+        if fix_ocr_spelling and seg.translated_text:
+            item_dict["tr_draft"] = seg.translated_text
+        payload_items.append(item_dict)
 
     input_payload = {
         "context_before": [t for t in (context_before or []) if t and t.strip()],
@@ -112,21 +167,16 @@ def _call_gemini_batch_postprocess(
     }
 
     task_instructions: list[str] = []
-    if fix_ocr_spelling and translate_to:
+    if fix_ocr_spelling:
         task_instructions.append(
-            f"1. Sửa lỗi chính tả/dấu câu OCR ở câu gốc tiếng gốc trong 't'.\n"
-            f"2. Dịch tự nhiên và chính xác sang '{translate_to}' trong trường 'tr'.\n"
-            "3. Trả về đúng mảng JSON: [{\"id\": string, \"t\": string, \"tr\": string}]."
+            "1. Trường 't' là văn bản gốc dùng để đối chiếu ngữ nghĩa. TUYỆT ĐỐI giữ nguyên bản gốc, KHÔNG dịch đè lên bản gốc.\n"
+            f"2. Trau chuốt, sửa lỗi diễn đạt/chính tả và cải thiện bản dịch trong 'tr_draft' (hoặc dịch mới từ 't' nếu chưa có 'tr_draft' hoặc còn sót chữ gốc) sang {target_lang_label} thật tự nhiên, mượt mà, chuẩn ngữ cảnh và đặt kết quả vào trường 'tr'.\n"
+            "3. Trả về đúng mảng JSON: [{\"id\": string, \"tr\": string}]."
         )
     elif translate_to:
         task_instructions.append(
-            f"1. Dịch từng câu phụ đề sang '{translate_to}' trong trường 'tr'.\n"
+            f"1. Dịch đầy đủ 100% từng câu phụ đề trong 't' sang {target_lang_label} trong trường 'tr'. TUYỆT ĐỐI KHÔNG bỏ sót dòng nào và KHÔNG để sót chữ ngôn ngữ gốc chưa dịch trong 'tr'.\n"
             "2. Trả về đúng mảng JSON: [{\"id\": string, \"tr\": string}]."
-        )
-    elif fix_ocr_spelling:
-        task_instructions.append(
-            "1. Sửa lỗi chính tả OCR và dấu thanh bị vỡ trong 't'.\n"
-            "2. Trả về đúng mảng JSON: [{\"id\": string, \"t\": string}]."
         )
 
     prompt = (
@@ -245,9 +295,10 @@ async def run_llm_postprocess_pipeline(
         }.get(req.translation_context, "Đời thường")
 
         action_desc = []
+        effective_translate_to = req.translate_to or ("vi" if req.fix_ocr_spelling else None)
         if req.fix_ocr_spelling:
-            action_desc.append("Sửa lỗi chính tả")
-        if req.translate_to:
+            action_desc.append(f"AI Polish bản dịch ({effective_translate_to}) [{context_label}]")
+        elif req.translate_to:
             action_desc.append(f"Dịch sang {req.translate_to} [{context_label}]")
         action_title = " + ".join(action_desc) or "Xử lý AI"
 
@@ -269,23 +320,39 @@ async def run_llm_postprocess_pipeline(
         cache_updates: list[dict] = []
         indices_to_call_api: list[int] = []
 
+        req_model = req.model or "default"
+        req_pver = req.prompt_version or "v1.0"
+
         if req.translate_to:
-            # Query existing translation_cache for all segments
+            # Query existing translation_cache for all segments using normalized text & 5-tuple composite key
+            query_sources = [
+                (s.normalized_text or convert_t2s(s.text or "")).strip()
+                for s in segments
+            ]
             cached_translations = await db.get_cached_translations(
                 target_lang=req.translate_to,
                 context_type=context_str,
-                source_texts=[s.text for s in segments],
+                source_texts=query_sources,
+                model_name=req_model,
+                prompt_version=req_pver,
             )
 
             for idx, seg in enumerate(segments):
-                clean_src = seg.text.strip()
-                # Skip if already translated and not forcing re-translation
-                if not req.force_retranslate and seg.translated_text and seg.translated_text.strip():
+                clean_src = (seg.normalized_text or convert_t2s(seg.text or "")).strip()
+                # Skip if already translated with a valid translation and not forcing re-translation
+                if (
+                    not req.force_retranslate
+                    and _is_valid_translation(seg.text, seg.translated_text, req.translate_to)
+                ):
                     cached_applied_count += 1
                     continue
 
-                # Check if present in translation_cache
-                if not req.force_retranslate and clean_src in cached_translations:
+                # Check if present in translation_cache with a valid translation
+                if (
+                    not req.force_retranslate
+                    and clean_src in cached_translations
+                    and _is_valid_translation(seg.text, cached_translations[clean_src], req.translate_to)
+                ):
                     cached_trans = remove_trailing_period(cached_translations[clean_src])
                     seg.translated_text = cached_trans
                     all_updated_segments[idx] = seg
@@ -294,7 +361,7 @@ async def run_llm_postprocess_pipeline(
                 else:
                     indices_to_call_api.append(idx)
         else:
-            # Spellcheck only: process all
+            # AI Polish without explicit translate_to: process all segments
             indices_to_call_api = list(range(len(segments)))
 
         # If cache updates were found, save them atomically and broadcast
@@ -334,8 +401,8 @@ async def run_llm_postprocess_pipeline(
             )
             return all_updated_segments
 
-        # 2. Divide remaining items into batches of size req.batch_size (default 50)
-        batch_size = max(10, int(req.batch_size or 50))
+        # 2. Divide remaining items into batches of size min(req.batch_size, 30) to prevent LLM drift/truncation
+        batch_size = max(10, min(35, int(req.batch_size or 30))) if not req.batch_size or req.batch_size == 50 else max(10, int(req.batch_size))
         batch_index_groups = [
             indices_to_call_api[i : i + batch_size]
             for i in range(0, len(indices_to_call_api), batch_size)
@@ -349,6 +416,61 @@ async def run_llm_postprocess_pipeline(
         total_candidate_tokens = 0
         sem = asyncio.Semaphore(3)  # Respect Gemini rate limits
 
+        def _extract_item_trans(
+            res_item: dict | None, orig_text: str | None = None
+        ) -> str | None:
+            if not res_item or not isinstance(res_item, dict):
+                return None
+            cand = (
+                res_item.get("tr")
+                or res_item.get("translated_text")
+                or res_item.get("translation")
+            )
+            if cand is None and req.fix_ocr_spelling:
+                fallback_t = res_item.get("t") or res_item.get("text")
+                if (
+                    fallback_t is not None
+                    and str(fallback_t).strip()
+                    and str(fallback_t).strip() != (orig_text or "").strip()
+                ):
+                    cand = fallback_t
+            if cand is not None:
+                cand = str(cand).strip() or None
+            return cand
+
+        def _match_batch_item(
+            pos: int,
+            seg: SubtitleSegment,
+            by_id: dict[str, dict],
+            by_i: dict[int, dict],
+            raw_list: list,
+            batch_id_set: set[str],
+        ) -> dict | None:
+            seg_id_str = str(seg.id)
+            if seg_id_str in by_id:
+                return by_id[seg_id_str]
+            if f"idx_{pos}" in by_id:
+                return by_id[f"idx_{pos}"]
+            if str(pos) in by_id and str(pos) not in batch_id_set:
+                return by_id[str(pos)]
+            if pos in by_i:
+                return by_i[pos]
+            if pos < len(raw_list) and isinstance(raw_list[pos], dict):
+                cand_item = raw_list[pos]
+                cand_id = str(cand_item.get("id") or "")
+                cand_i = cand_item.get("i")
+                # Only use positional fallback if the item does not explicitly belong to another segment
+                if cand_id and cand_id in batch_id_set and cand_id != seg_id_str:
+                    return None
+                if cand_i is not None:
+                    try:
+                        if int(cand_i) != pos:
+                            return None
+                    except (ValueError, TypeError):
+                        pass
+                return cand_item
+            return None
+
         async def process_batch_indices(idx_group: list[int]):
             nonlocal completed_count, total_tokens_used, total_prompt_tokens, total_candidate_tokens
             async with sem:
@@ -356,6 +478,7 @@ async def run_llm_postprocess_pipeline(
                     return
 
                 batch_segs = [segments[i] for i in idx_group]
+                batch_id_set = {str(s.id) for s in batch_segs if s.id}
 
                 # Context window: extract up to 3 preceding and 3 succeeding lines from full timeline
                 min_idx = idx_group[0]
@@ -368,7 +491,7 @@ async def run_llm_postprocess_pipeline(
                         _call_gemini_batch_postprocess,
                         batch=batch_segs,
                         fix_ocr_spelling=req.fix_ocr_spelling,
-                        translate_to=req.translate_to,
+                        translate_to=effective_translate_to,
                         api_key=api_key,
                         translation_context=req.translation_context,
                         preferred_model=req.model,
@@ -381,7 +504,7 @@ async def run_llm_postprocess_pipeline(
                         _call_gemini_batch_postprocess,
                         batch_segs,
                         req.fix_ocr_spelling,
-                        req.translate_to,
+                        effective_translate_to,
                         api_key,
                     )
                 usage = getattr(raw_results, "usage", {}) if hasattr(raw_results, "usage") else {}
@@ -391,59 +514,93 @@ async def run_llm_postprocess_pipeline(
                 by_i: dict[int, dict] = {}
                 for idx, item in enumerate(raw_results):
                     if isinstance(item, dict):
-                        if "id" in item and item["id"]:
+                        if "id" in item and item["id"] is not None and str(item["id"]) != "":
                             by_id[str(item["id"])] = item
-                        if "i" in item:
+                        if "i" in item and item["i"] is not None:
                             try:
                                 by_i[int(item["i"])] = item
                             except (ValueError, TypeError):
                                 pass
 
-                # Check if any segments are missing from results
+                # Check if any segments are missing OR have invalid/untranslated output
                 missing_in_batch: list[SubtitleSegment] = []
                 for pos, seg in enumerate(batch_segs):
-                    if by_id:
-                        if str(seg.id) not in by_id:
-                            missing_in_batch.append(seg)
-                    elif by_i:
-                        if pos not in by_i:
-                            missing_in_batch.append(seg)
-                    else:
-                        if pos >= len(raw_results):
-                            missing_in_batch.append(seg)
+                    matched_item = _match_batch_item(
+                        pos, seg, by_id, by_i, raw_results, batch_id_set
+                    )
+                    cand_tr = _extract_item_trans(matched_item, seg.text)
+                    if matched_item is None or (
+                        effective_translate_to
+                        and not _is_valid_translation(seg.text, cand_tr, effective_translate_to)
+                    ):
+                        missing_in_batch.append(seg)
 
-                # Granular retry: only retry missing lines
+                # Granular retry: retry missing or untranslated lines in small sub-batches (<= 15 items)
                 if missing_in_batch:
                     logger.warning(
-                        "Batch thiếu %d/%d dòng. Thử lại riêng các dòng lỗi...",
+                        "Batch thiếu hoặc chưa dịch %d/%d dòng. Thử lại riêng các dòng lỗi...",
                         len(missing_in_batch),
                         len(batch_segs),
                     )
-                    try:
-                        retry_results = await asyncio.to_thread(
-                            _call_gemini_batch_postprocess,
-                            batch=missing_in_batch,
-                            fix_ocr_spelling=req.fix_ocr_spelling,
-                            translate_to=req.translate_to,
-                            api_key=api_key,
-                            translation_context=req.translation_context,
-                            preferred_model=req.model,
-                            context_before=ctx_before,
-                            context_after=ctx_after,
-                        )
-                        retry_usage = getattr(retry_results, "usage", {}) if hasattr(retry_results, "usage") else {}
-                        usage["total_tokens"] = usage.get("total_tokens", 0) + retry_usage.get("total_tokens", 0)
-                        usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + retry_usage.get("prompt_tokens", 0)
-                        usage["candidate_tokens"] = usage.get("candidate_tokens", 0) + retry_usage.get("candidate_tokens", 0)
+                    retry_chunk_size = 15
+                    for r_start in range(0, len(missing_in_batch), retry_chunk_size):
+                        retry_chunk = missing_in_batch[r_start : r_start + retry_chunk_size]
+                        retry_chunk_ids = {str(s.id): s for s in retry_chunk if s.id}
+                        try:
+                            try:
+                                retry_results = await asyncio.to_thread(
+                                    _call_gemini_batch_postprocess,
+                                    batch=retry_chunk,
+                                    fix_ocr_spelling=req.fix_ocr_spelling,
+                                    translate_to=effective_translate_to,
+                                    api_key=api_key,
+                                    translation_context=req.translation_context,
+                                    preferred_model=req.model,
+                                    context_before=ctx_before,
+                                    context_after=ctx_after,
+                                )
+                            except TypeError:
+                                retry_results = await asyncio.to_thread(
+                                    _call_gemini_batch_postprocess,
+                                    retry_chunk,
+                                    req.fix_ocr_spelling,
+                                    effective_translate_to,
+                                    api_key,
+                                )
+                            retry_usage = getattr(retry_results, "usage", {}) if hasattr(retry_results, "usage") else {}
+                            usage["total_tokens"] = usage.get("total_tokens", 0) + retry_usage.get("total_tokens", 0)
+                            usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + retry_usage.get("prompt_tokens", 0)
+                            usage["candidate_tokens"] = usage.get("candidate_tokens", 0) + retry_usage.get("candidate_tokens", 0)
 
-                        for r_idx, r_item in enumerate(retry_results):
-                            if isinstance(r_item, dict):
-                                if "id" in r_item and r_item["id"]:
-                                    by_id[str(r_item["id"])] = r_item
-                                elif r_idx < len(missing_in_batch):
-                                    by_id[missing_in_batch[r_idx].id] = r_item
-                    except Exception as retry_err:
-                        logger.warning("Thử lại các dòng lỗi thất bại: %s", retry_err)
+                            for r_idx, r_item in enumerate(retry_results):
+                                if not isinstance(r_item, dict):
+                                    continue
+                                target_seg_id: str | None = None
+                                raw_rid = str(r_item.get("id")) if r_item.get("id") is not None else ""
+                                if raw_rid in retry_chunk_ids:
+                                    target_seg_id = raw_rid
+                                elif raw_rid.startswith("idx_"):
+                                    try:
+                                        parsed_i = int(raw_rid.split("_", 1)[1])
+                                        if 0 <= parsed_i < len(retry_chunk):
+                                            target_seg_id = str(retry_chunk[parsed_i].id)
+                                    except (ValueError, TypeError):
+                                        pass
+                                elif raw_rid.isdigit() and int(raw_rid) < len(retry_chunk):
+                                    target_seg_id = str(retry_chunk[int(raw_rid)].id)
+                                elif "i" in r_item and r_item["i"] is not None:
+                                    try:
+                                        parsed_i = int(r_item["i"])
+                                        if 0 <= parsed_i < len(retry_chunk):
+                                            target_seg_id = str(retry_chunk[parsed_i].id)
+                                    except (ValueError, TypeError):
+                                        pass
+                                if target_seg_id is None and r_idx < len(retry_chunk):
+                                    target_seg_id = str(retry_chunk[r_idx].id)
+                                if target_seg_id:
+                                    by_id[target_seg_id] = r_item
+                        except Exception as retry_err:
+                            logger.warning("Thử lại các dòng lỗi thất bại: %s", retry_err)
 
                 async with progress_lock:
                     total_tokens_used += usage.get("total_tokens", 0)
@@ -451,33 +608,34 @@ async def run_llm_postprocess_pipeline(
                     total_candidate_tokens += usage.get("candidate_tokens", 0)
 
                 batch_db_updates = []
-                new_cache_entries: list[tuple[str, str, str, str]] = []
+                new_cache_entries: list[tuple[str, str, str, str, str, str]] = []
                 batch_result_segments: list[SubtitleSegment] = []
 
                 for pos, orig_idx in enumerate(idx_group):
                     seg = segments[orig_idx]
-                    res_item = by_id.get(str(seg.id)) or by_i.get(pos) or (raw_results[pos] if pos < len(raw_results) else None)
+                    res_item = _match_batch_item(
+                        pos, seg, by_id, by_i, raw_results, batch_id_set
+                    )
 
                     if res_item and isinstance(res_item, dict):
-                        new_text = res_item.get("t") or res_item.get("text") or seg.text
-                        new_trans = (
-                            res_item.get("tr")
-                            or res_item.get("translated_text")
-                            or res_item.get("translation")
-                        )
-                        if new_trans is not None:
-                            new_trans = str(new_trans).strip() or None
+                        new_trans = _extract_item_trans(res_item, seg.text)
 
-                        upd_text = (
-                            remove_trailing_period(str(new_text).strip())
-                            if req.fix_ocr_spelling
-                            else seg.text
-                        )
-                        upd_trans = (
-                            remove_trailing_period(new_trans)
-                            if (req.translate_to and new_trans is not None)
-                            else (new_trans if req.translate_to else seg.translated_text)
-                        )
+                        # Requirement 3: Strictly preserve original text (seg.text / seg.original_text);
+                        # AI Polish and AI Translate only update translated_text.
+                        upd_text = seg.text
+                        if effective_translate_to and new_trans is not None:
+                            cleaned_cand = remove_trailing_period(new_trans)
+                            if _is_valid_translation(seg.text, cleaned_cand, effective_translate_to):
+                                upd_trans = cleaned_cand
+                            elif _is_valid_translation(
+                                seg.text, seg.translated_text, effective_translate_to
+                            ):
+                                # Preserve existing valid draft translation if retry still returned CJK drift
+                                upd_trans = seg.translated_text
+                            else:
+                                upd_trans = cleaned_cand
+                        else:
+                            upd_trans = seg.translated_text
 
                         batch_db_updates.append({
                             "id": seg.id,
@@ -487,12 +645,20 @@ async def run_llm_postprocess_pipeline(
                         seg.text = upd_text
                         seg.translated_text = upd_trans
 
-                        # Prepare entry for persistent translation cache
-                        if req.translate_to and upd_trans:
+                        # Prepare entry for persistent translation cache using 5-tuple composite key
+                        # Only cache valid translations (never cache untranslated CJK drift)
+                        if (
+                            effective_translate_to
+                            and upd_trans
+                            and _is_valid_translation(seg.text, upd_trans, effective_translate_to)
+                        ):
+                            cache_src = (seg.normalized_text or convert_t2s(seg.text or "")).strip()
                             new_cache_entries.append((
-                                seg.text.strip(),
-                                req.translate_to.strip(),
+                                cache_src,
+                                effective_translate_to.strip(),
                                 context_str,
+                                req_model,
+                                req_pver,
                                 upd_trans,
                             ))
 
@@ -615,20 +781,31 @@ async def estimate_llm_cost(req: LLMEstimateRequest) -> LLMEstimateResponse:
     context_str = req.translation_context.value if hasattr(req.translation_context, "value") else str(req.translation_context)
 
     for seg in segments:
-        if not req.force_retranslate and seg.translated_text and seg.translated_text.strip():
+        if not req.force_retranslate and _is_valid_translation(
+            seg.text, seg.translated_text, req.translate_to
+        ):
             cached_count += 1
         else:
             needing_trans.append(seg)
 
     if req.translate_to and needing_trans:
+        query_sources = [
+            (s.normalized_text or convert_t2s(s.text or "")).strip()
+            for s in needing_trans
+        ]
         cached_map = await db.get_cached_translations(
             target_lang=req.translate_to,
             context_type=context_str,
-            source_texts=[s.text for s in needing_trans],
+            source_texts=query_sources,
         )
         final_needing = []
         for s in needing_trans:
-            if not req.force_retranslate and s.text.strip() in cached_map:
+            src_k = (s.normalized_text or convert_t2s(s.text or "")).strip()
+            if (
+                not req.force_retranslate
+                and src_k in cached_map
+                and _is_valid_translation(s.text, cached_map[src_k], req.translate_to)
+            ):
                 cached_count += 1
             else:
                 final_needing.append(s)

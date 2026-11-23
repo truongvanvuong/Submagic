@@ -8,7 +8,7 @@ echo ========================================================
 echo.
 
 :: 1. Dọn dẹp sạch sẽ các tiến trình cũ trước khi khởi động
-echo [INFO] Dọn dẹp tiến trình cũ còn sót lại (Port 8000, 5173)...
+echo [INFO] Dọn dẹp tiến trình cũ còn sót lại (Port 8001, 3000)...
 call "%~dp0stop.bat" >nul 2>nul
 
 :: 2. Kiểm tra môi trường ảo Python của Backend
@@ -52,15 +52,15 @@ if not exist "frontend\node_modules" (
 )
 
 :: 5. Khởi động Backend (FastAPI + Uvicorn)
-echo [INFO] Khởi động Backend tại http://127.0.0.1:8000 ...
-start "Sub Magic Backend" cmd /c "cd /d ""%~dp0backend"" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app"
+echo [INFO] Khởi động Backend tại http://127.0.0.1:8001 ...
+start "Sub Magic Backend" cmd /c "cd /d ""%~dp0backend"" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir app"
 
 :: 6. Khởi động Frontend Dev Server
 if "%USE_WSL%"=="1" (
-    echo [INFO] Khởi động Frontend qua WSL tại http://localhost:5173 ...
+    echo [INFO] Khởi động Frontend qua WSL tại http://localhost:3000 ...
     start "Sub Magic Frontend" cmd /c "wsl --cd ""%~dp0frontend"" npm run dev -- --host"
 ) else (
-    echo [INFO] Khởi động Frontend tại http://localhost:5173 ...
+    echo [INFO] Khởi động Frontend tại http://localhost:3000 ...
     start "Sub Magic Frontend" cmd /c "cd /d ""%~dp0frontend"" && npm run dev"
 )
 
@@ -68,13 +68,13 @@ echo [INFO] Đang chờ dịch vụ sẵn sàng...
 timeout /t 4 /nobreak >nul
 
 echo [INFO] Đang mở ứng dụng trong trình duyệt...
-start http://127.0.0.1:8000
+start http://localhost:3000
 
 echo.
 echo ========================================================
 echo  SUB MAGIC ĐANG CHẠY!
-echo  - Ứng dụng chính (Nhanh): http://127.0.0.1:8000
-echo  - Dev Server:            http://localhost:5173
+echo  - Ứng dụng chính (Nhanh): http://127.0.0.1:8001
+echo  - Dev Server:            http://localhost:3000
 echo ========================================================
 echo.
 echo  [LƯU Ý QUAN TRỌNG]:

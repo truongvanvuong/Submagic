@@ -1,16 +1,21 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
+@plugin "daisyui";
 @layer base {
   body {
     @apply bg-base-100 text-base-content antialiased;
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 
+  /* Monospace timecodes use tabular numerals for strict vertical alignment */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+  }
+
   /* Accessible focus indicators */
   :focus-visible {
-    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-base-100;
+    @apply outline-none ring-2 ring-primary ring-offset-1 ring-offset-base-100;
   }
 }
 
@@ -25,32 +30,32 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #3b4754; /* blue_slate 400 */
+  background: #625241; /* dust_grey 200 */
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #495867; /* blue_slate DEFAULT */
+  background: #937a62; /* dust_grey 300 */
 }
 
 [data-theme="studio-dark"] ::-webkit-scrollbar-thumb {
-  background: #2c363f; /* blue_slate 300 */
+  background: #625241; /* dust_grey 200 */
 }
 
 [data-theme="studio-dark"] ::-webkit-scrollbar-thumb:hover {
-  background: #495867; /* blue_slate DEFAULT */
+  background: #937a62; /* dust_grey 300 */
 }
 
 [data-theme="cool-sky"] ::-webkit-scrollbar-thumb,
 [data-theme="warm-linen"] ::-webkit-scrollbar-thumb,
 [data-theme="warm-parchment"] ::-webkit-scrollbar-thumb {
-  background: #bdd5ea; /* pale_sky DEFAULT */
+  background: #d5bdaf; /* almond_silk 500 */
 }
 
 [data-theme="cool-sky"] ::-webkit-scrollbar-thumb:hover,
 [data-theme="warm-linen"] ::-webkit-scrollbar-thumb:hover,
 [data-theme="warm-parchment"] ::-webkit-scrollbar-thumb:hover {
-  background: #7dacd6; /* pale_sky 400 */
+  background: #a87b59; /* powder_petal 300 */
 }
 
 /* Animation utilities for smooth transitions without layout shift */

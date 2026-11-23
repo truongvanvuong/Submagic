@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Response
 
 from app.config import settings
 from app.database import db
-from app.schemas import BilingualLayout, ExportFormat, ExportRequest
+from app.schemas import BilingualLayout, ExportFormat, ExportRequest, ScriptVariant
 from app.utils.subtitle_formatter import format_subtitles
 
 _orig_get_event_loop = asyncio.get_event_loop
@@ -68,6 +68,7 @@ async def export_project_subtitles_get(
     format: ExportFormat = Query(ExportFormat.SRT),
     bilingual_layout: BilingualLayout = Query(BilingualLayout.NONE),
     include_timestamps_in_txt: bool = Query(True),
+    script_variant: ScriptVariant = Query(ScriptVariant.ORIGINAL),
 ) -> Response:
     project = await db.get_project(project_id)
     if not project:
@@ -83,6 +84,7 @@ async def export_project_subtitles_get(
         include_timestamps_in_txt=include_timestamps_in_txt,
         video_width=vw,
         video_height=vh,
+        script_variant=script_variant,
     )
 
     ext = format.value
@@ -121,6 +123,7 @@ async def export_project_subtitles(project_id: str, req: ExportRequest) -> Respo
         include_timestamps_in_txt=req.include_timestamps_in_txt,
         video_width=vw,
         video_height=vh,
+        script_variant=req.script_variant,
     )
 
     ext = req.format.value

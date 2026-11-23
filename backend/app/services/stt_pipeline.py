@@ -41,6 +41,94 @@ EventCallback = Callable[[WebSocketEvent], Awaitable[None]]
 # Sentence and clause punctuation sets (Latin, Vietnamese, CJK)
 SENTENCE_END_PUNCT = (".", "?", "!", "…", "。", "？", "！", ";", "；")
 CLAUSE_END_PUNCT = (",", "，", "、", ":", "：", "-")
+CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]")
+# Split after internal CJK punctuation, sentence-end ?/!/;, or ASCII ,/:/. when NOT inside numbers/timecodes/URLs
+INTRA_TOKEN_SPLIT_RE = re.compile(
+    r"([。？！?!；;，、：]+\s*|(?<!\d)[,:](?!\d|//)\s*|(?<!\d)\.(?=\s+\S|[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af])\s*)"
+)
+
+
+def _has_cjk_chars(text: str) -> bool:
+    """Return True if the text contains CJK ideographs, Kana, or Hangul."""
+    return bool(CJK_CHAR_RE.search(text))
+
+
+def _expand_compound_word_tokens(words: list[WordTimestamp]) -> list[WordTimestamp]:
+    """
+    Split compound Whisper word tokens that contain internal clause/sentence punctuation,
+    multi-word fallback strings, or CJK space-separated clauses into finer WordTimestamp
+    tokens with proportional timing. Preserves numbers and timecodes like '10,000' or '10:30'.
+    """
+    expanded: list[WordTimestamp] = []
+    for w in words:
+        raw_w = w.word
+        if not raw_w or not raw_w.strip():
+            continue
+
+        is_cjk = _has_cjk_chars(raw_w)
+        leading_space = " " if raw_w[0].isspace() else ""
+        stripped = raw_w.strip()
+
+        if " " in stripped:
+            space_parts = [p for p in stripped.split(" ") if p]
+        else:
+            space_parts = [stripped]
+
+        sub_pieces: list[str] = []
+        for s_idx, sp in enumerate(space_parts):
+            prefix = leading_space if s_idx == 0 else " "
+            # Split after internal punctuation if followed by more text
+            parts = INTRA_TOKEN_SPLIT_RE.split(sp)
+            raw_chunks: list[str] = []
+            if len(parts) <= 1:
+                raw_chunks.append(prefix + sp)
+            else:
+                buf = ""
+                first_piece = True
+                for p in parts:
+                    if not p:
+                        continue
+                    buf += p
+                    if INTRA_TOKEN_SPLIT_RE.fullmatch(p):
+                        raw_chunks.append((prefix if first_piece else "") + buf)
+                        buf = ""
+                        first_piece = False
+                if buf:
+                    raw_chunks.append((prefix if first_piece else "") + buf)
+
+            # If an unpunctuated CJK token is overly long (> 14 chars), slice it into
+            # 5-char sub-tokens without spaces so SmartWordSegmenter can enforce line limits.
+            for chunk in raw_chunks:
+                c_strip = chunk.strip()
+                if is_cjk and len(c_strip) > 14 and not c_strip.endswith((*SENTENCE_END_PUNCT, *CLAUSE_END_PUNCT)):
+                    c_prefix = " " if chunk[0].isspace() else ""
+                    for k in range(0, len(c_strip), 5):
+                        sub_pieces.append((c_prefix if k == 0 else "") + c_strip[k : k + 5])
+                else:
+                    sub_pieces.append(chunk)
+
+        if len(sub_pieces) <= 1:
+            expanded.append(w)
+            continue
+
+        total_chars = max(1, sum(max(1, len(p.strip())) for p in sub_pieces))
+        dur = max(0.02, float(w.end) - float(w.start))
+        cursor = float(w.start)
+        for p_idx, piece in enumerate(sub_pieces):
+            c_len = max(1, len(piece.strip()))
+            piece_dur = dur * (c_len / total_chars)
+            next_cursor = float(w.end) if p_idx == len(sub_pieces) - 1 else min(float(w.end), cursor + piece_dur)
+            expanded.append(
+                WordTimestamp(
+                    word=piece,
+                    start=round(cursor, 3),
+                    end=round(max(cursor + 0.01, next_cursor), 3),
+                    probability=w.probability,
+                )
+            )
+            cursor = next_cursor
+
+    return expanded
 
 # Common Whisper silence/BGM hallucination patterns when confidence is low
 HALLUCINATION_PATTERNS = [
@@ -201,6 +289,10 @@ class SmartWordSegmenter:
         if not words:
             return []
 
+        expanded_words = _expand_compound_word_tokens(words)
+        if not expanded_words:
+            return []
+
         segments: list[SubtitleSegment] = []
         current_words: list[WordTimestamp] = []
         current_index = start_index
@@ -245,7 +337,7 @@ class SmartWordSegmenter:
             current_index += 1
             current_words = []
 
-        for word in words:
+        for word in expanded_words:
             w_str = word.word
             if not w_str or not w_str.strip():
                 continue
@@ -253,21 +345,72 @@ class SmartWordSegmenter:
             if current_words:
                 prev_word = current_words[-1]
                 pause_gap = max(0.0, word.start - prev_word.end)
+                seg_duration = max(0.0, prev_word.end - current_words[0].start)
                 current_text = re.sub(
                     r"\s+", " ", "".join(w.word for w in current_words).strip()
                 )
                 candidate_text = re.sub(
                     r"\s+", " ", f"{current_text}{w_str}".strip()
                 )
+                is_cjk = _has_cjk_chars(current_text) or _has_cjk_chars(w_str)
+                effective_max_chars = (
+                    min(self.max_block_chars, max(16, int(self.max_chars_per_line * 0.55)))
+                    if is_cjk
+                    else self.max_block_chars
+                )
+                effective_min_chars = (
+                    min(2, self.min_segment_chars)
+                    if is_cjk
+                    else min(6, self.min_segment_chars)
+                )
 
                 # Rule 1: Hard character limit reached
-                if len(candidate_text) > self.max_block_chars:
+                if len(candidate_text) > effective_max_chars:
                     flush_current()
 
-                # Rule 2: Natural acoustic pause after a reasonable chunk
+                # Rule 2A: In CJK Whisper output, spaces between CJK tokens mark spoken clause pauses
                 elif (
-                    pause_gap >= self.max_pause_sec
-                    and len(current_text) >= self.min_segment_chars
+                    is_cjk
+                    and len(current_text) >= 3
+                    and (w_str[0].isspace() or prev_word.word[-1].isspace())
+                ):
+                    flush_current()
+
+                # Rule 2B: Natural acoustic pause after a spoken chunk
+                elif (
+                    pause_gap >= (min(self.max_pause_sec, 0.25) if is_cjk else self.max_pause_sec)
+                    and len(current_text) >= effective_min_chars
+                ):
+                    flush_current()
+
+                # Rule 2C: Moderate breath pause after a substantial clause or utterance duration
+                elif (
+                    is_cjk
+                    and pause_gap >= 0.14
+                    and (len(current_text) >= 6 or seg_duration >= 1.6)
+                ):
+                    flush_current()
+                elif (
+                    not is_cjk
+                    and pause_gap >= min(0.15, self.max_pause_sec * 0.35)
+                    and (
+                        len(current_text) >= int(self.max_chars_per_line * 0.55)
+                        or seg_duration >= 2.2
+                    )
+                ):
+                    flush_current()
+                elif (
+                    not is_cjk
+                    and seg_duration >= 3.2
+                    and len(current_text) >= self.max_chars_per_line
+                ):
+                    flush_current()
+
+                # Rule 2D: Short clause ending with comma followed by any slight pause
+                elif (
+                    current_text.endswith(CLAUSE_END_PUNCT)
+                    and pause_gap >= 0.08
+                    and len(current_text) >= 3
                 ):
                     flush_current()
 
@@ -275,17 +418,23 @@ class SmartWordSegmenter:
             updated_text = re.sub(
                 r"\s+", " ", "".join(w.word for w in current_words).strip()
             )
+            is_cjk_updated = _has_cjk_chars(updated_text)
 
             # Rule 3: Sentence-terminal punctuation
-            if updated_text.endswith(SENTENCE_END_PUNCT) and len(updated_text) >= 4:
-                flush_current()
-
-            # Rule 4: Clause punctuation when already past ~60% of a single line
-            elif (
-                updated_text.endswith(CLAUSE_END_PUNCT)
-                and len(updated_text) >= int(self.max_chars_per_line * 0.65)
+            if updated_text.endswith(SENTENCE_END_PUNCT) and len(updated_text) >= (
+                2 if is_cjk_updated else 4
             ):
                 flush_current()
+
+            # Rule 4: Clause punctuation (commas, colons, etc.) matching natural speech rhythm
+            elif updated_text.endswith(CLAUSE_END_PUNCT):
+                clause_min_chars = (
+                    3
+                    if is_cjk_updated
+                    else min(12, max(6, int(self.max_chars_per_line * 0.35)))
+                )
+                if len(updated_text) >= clause_min_chars:
+                    flush_current()
 
         flush_current()
         return segments
@@ -761,6 +910,30 @@ def _process_raw_whisper_segment(
     if is_likely_hallucination(text, confidence):
         return next_index
 
+    seg_start = float(raw_seg.start)
+    seg_end = max(seg_start + 0.2, float(raw_seg.end))
+
+    # If smart_segmentation is active and fallback text contains multiple clauses or exceeds 1 line,
+    # synthesize proportional WordTimestamp tokens so long fallback segments are also split naturally.
+    if req.smart_segmentation and (
+        any(p in text for p in (*SENTENCE_END_PUNCT, *CLAUSE_END_PUNCT))
+        or len(text) > req.max_chars_per_line
+    ):
+        synth_word = WordTimestamp(
+            word=text,
+            start=round(seg_start, 3),
+            end=round(seg_end, 3),
+            probability=round(confidence, 4),
+        )
+        sub_segments = segmenter.segment_words(
+            [synth_word], project_id=req.project_id, start_index=next_index
+        )
+        if sub_segments:
+            for seg in sub_segments:
+                loop.call_soon_threadsafe(seg_queue.put_nowait, seg)
+                next_index += 1
+            return next_index
+
     formatted_text = wrap_subtitle_lines(
         text,
         max_chars_per_line=req.max_chars_per_line,
@@ -770,8 +943,8 @@ def _process_raw_whisper_segment(
         id=str(uuid.uuid4()),
         project_id=req.project_id,
         index=next_index,
-        start_time=round(float(raw_seg.start), 3),
-        end_time=round(max(float(raw_seg.start) + 0.2, float(raw_seg.end)), 3),
+        start_time=round(seg_start, 3),
+        end_time=round(seg_end, 3),
         text=formatted_text,
         confidence=round(confidence, 4),
         source="stt",

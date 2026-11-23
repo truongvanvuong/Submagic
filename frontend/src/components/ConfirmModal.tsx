@@ -39,7 +39,7 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
 
   const content = (
     <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-150">
-      <div className="w-full max-w-sm p-5 bg-base-200 border border-blue_slate-500/30 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-150 relative z-10 font-sans">
+      <div className="w-full max-w-sm p-5 bg-base-200 border border-base-content/20 rounded-2xl shadow-2xl animate-in zoom-in-95 duration-150 relative z-10 font-sans">
         <div className="flex items-start gap-3.5">
           <div
             className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
@@ -57,18 +57,18 @@ export const ConfirmModal: React.FC<ConfirmModalProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center justify-end mt-5 pt-3.5 border-t border-blue_slate-500/20 gap-2">
+        <div className="flex items-center justify-end mt-5 pt-3.5 border-t border-base-content/15 gap-2">
           <button
             type="button"
             onClick={onCancel}
-            className="btn btn-sm btn-ghost rounded-lg font-medium text-xs cursor-pointer"
+            className="btn btn-sm btn-ghost rounded-full font-medium text-xs cursor-pointer"
           >
             {cancelLabel}
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            className={`btn btn-sm rounded-lg font-semibold text-xs shadow-sm cursor-pointer ${
+            className={`btn btn-sm rounded-full font-semibold text-xs shadow-sm cursor-pointer ${
               isDanger ? 'btn-error text-white' : 'btn-primary'
             }`}
           >

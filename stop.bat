@@ -5,17 +5,10 @@ title Sub Magic - Dừng ứng dụng
 echo ========================================================
 echo        DỪNG TOÀN BỘ TIẾN TRÌNH SUB MAGIC
 echo ========================================================
-echo [INFO] Đang đóng Backend (Port 8000) và Frontend (Port 5173)...
+echo [INFO] Đang đóng Backend (Port 8001) và Frontend (Port 3000, 5173)...
 
-:: 1. Kill Windows processes listening on port 8000 and 5173
-powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8000, 5173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }" >nul 2>nul
-
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":8000 "') do (
-    taskkill /F /PID %%a >nul 2>nul
-)
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":5173 "') do (
-    taskkill /F /PID %%a >nul 2>nul
-)
+:: 1. Kill native Windows node/python processes listening on port 8001, 3000 and 5173 (never kill wslrelay.exe!)
+powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort 8001, 3000, 5173 -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { $p = Get-Process -Id $_ -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -in @('node','python')) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }" >nul 2>nul
 
 :: 2. If WSL is active, kill any Vite dev processes inside WSL
 where wsl >nul 2>nul

@@ -10,16 +10,26 @@ import {
   Mic,
   ArrowUpDown,
   AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 import type { ProjectDetail, ProjectSummary } from '../types/subtitle';
 import ConfirmModal from './ConfirmModal';
+
+export interface BulkDeleteProgress {
+  done: number;
+  total: number;
+  currentName: string;
+}
 
 export interface ProjectDropdownProps {
   projects: ProjectSummary[];
   activeProject: ProjectDetail | null;
   onSelectProject: (projectId: string | null) => void;
   onDeleteProject: (projectId: string) => void | Promise<void>;
-  onBulkDeleteProjects?: (projectIds: string[]) => void | Promise<void>;
+  onBulkDeleteProjects?: (
+    projectIds: string[],
+    onProgress?: (info: BulkDeleteProgress) => void
+  ) => void | Promise<void>;
   isProcessing?: boolean;
   disabled?: boolean;
 }
@@ -41,9 +51,10 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [displayLimit, setDisplayLimit] = useState<number>(40);
 
-  // Modals state
+  // Modals & progress state
   const [pendingDeleteProject, setPendingDeleteProject] = useState<ProjectSummary | null>(null);
   const [isBulkDeleteModalOpen, setIsBulkDeleteModalOpen] = useState<boolean>(false);
+  const [bulkDeleteProgress, setBulkDeleteProgress] = useState<BulkDeleteProgress | null>(null);
 
   // Ref for Shift+Click range selection
   const lastSelectedIndexRef = useRef<number | null>(null);
@@ -201,12 +212,33 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
     const idsToDelete = [...selectedIds];
     setIsBulkDeleteModalOpen(false);
     setSelectedIds([]);
-    if (onBulkDeleteProjects) {
-      await onBulkDeleteProjects(idsToDelete);
-    } else {
-      for (const id of idsToDelete) {
-        await onDeleteProject(id);
+    if (idsToDelete.length === 0) return;
+
+    const firstProj = projects.find((p) => p.id === idsToDelete[0]);
+    setBulkDeleteProgress({
+      done: 0,
+      total: idsToDelete.length,
+      currentName: firstProj ? firstProj.name : idsToDelete[0],
+    });
+
+    try {
+      if (onBulkDeleteProjects) {
+        await onBulkDeleteProjects(idsToDelete, setBulkDeleteProgress);
+      } else {
+        for (let i = 0; i < idsToDelete.length; i += 1) {
+          const id = idsToDelete[i];
+          const p = projects.find((proj) => proj.id === id);
+          setBulkDeleteProgress({
+            done: i,
+            total: idsToDelete.length,
+            currentName: p ? p.name : id,
+          });
+          await onDeleteProject(id);
+        }
+        setBulkDeleteProgress({ done: idsToDelete.length, total: idsToDelete.length, currentName: '' });
       }
+    } finally {
+      setBulkDeleteProgress(null);
     }
   };
 
@@ -223,56 +255,63 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
 
   return (
     <div ref={containerRef} className="relative inline-block text-left">
-      {/* Trigger Button on Header */}
-      <div className="flex items-center gap-1 bg-base-300/60 hover:bg-base-300 border border-blue_slate-500/25 rounded-lg px-2.5 py-1 transition-smooth max-w-full">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => setIsOpen((prev) => !prev)}
-          className="flex items-center gap-1.5 text-xs font-medium text-base-content focus:outline-none max-w-[180px] xs:max-w-[220px] sm:max-w-[280px] md:max-w-[340px] cursor-pointer select-none"
-          title={activeProject ? `${activeProject.name} (${activeProject.mode.toUpperCase()})` : 'Chọn dự án'}
-        >
-          <FolderOpen className="w-3.5 h-3.5 text-base-content/60 shrink-0" />
-          <span className="truncate">
-            {activeProject ? activeProject.name : '-- Chưa chọn video --'}
-          </span>
-          {activeProject && (
-            <span className="badge badge-xs text-[9px] font-mono uppercase bg-glaucous-500 text-ghost_white-DEFAULT border-none shrink-0">
+      {/* Trigger Button on Header (btn-sm rounded-full) */}
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="btn btn-sm btn-outline border-base-content/25 hover:border-primary hover:bg-base-300 hover:text-base-content rounded-full flex flex-nowrap items-center gap-1.5 text-xs font-medium text-base-content cursor-pointer select-none max-w-[220px] sm:max-w-[280px] md:max-w-[340px] whitespace-nowrap overflow-hidden"
+        title={activeProject ? `${activeProject.name} (${activeProject.mode.toUpperCase()})` : 'Chọn dự án'}
+      >
+        <FolderOpen className="w-3.5 h-3.5 text-base-content/70 shrink-0" />
+        <span className="truncate min-w-0 flex-1 text-left">
+          {bulkDeleteProgress
+            ? `Đang xóa ${bulkDeleteProgress.done}/${bulkDeleteProgress.total}...`
+            : activeProject
+            ? activeProject.name
+            : '-- Chưa chọn video --'}
+        </span>
+        {bulkDeleteProgress ? (
+          <Loader2 className="w-3.5 h-3.5 text-error animate-spin shrink-0" />
+        ) : (
+          activeProject && (
+            <span className="badge badge-xs text-[9px] font-mono uppercase bg-primary text-primary-content border-none shrink-0">
               {activeProject.mode}
             </span>
-          )}
-          <ChevronDown
-            className={`w-3.5 h-3.5 text-base-content/50 shrink-0 transition-transform duration-150 ${
-              isOpen ? 'rotate-180' : ''
-            }`}
-          />
-        </button>
-      </div>
+          )
+        )}
+        <ChevronDown
+          className={`w-3.5 h-3.5 text-base-content/55 shrink-0 transition-transform duration-150 ${
+            isOpen ? 'rotate-180' : ''
+          }`}
+        />
+      </button>
 
       {/* Dropdown Menu Popover */}
       {isOpen && (
         <div
-          className="absolute left-0 mt-2 w-96 max-w-[calc(100vw-1.5rem)] bg-base-200 border border-blue_slate-500/30 rounded-2xl shadow-2xl ring-1 ring-black/10 dark:ring-white/10 z-[60] overflow-hidden flex flex-col font-sans animate-in fade-in zoom-in-95 duration-100"
+          className="absolute left-0 mt-2 w-96 max-w-[calc(100vw-1.5rem)] bg-base-200 border border-base-content/20 rounded-2xl shadow-2xl ring-1 ring-black/10 dark:ring-white/10 z-[60] overflow-hidden flex flex-col font-sans animate-in fade-in zoom-in-95 duration-100"
           style={{ minWidth: '320px' }}
         >
           {/* Top Bar: Search input & Sort button */}
-          <div className="p-3 border-b border-blue_slate-500/20 bg-base-300/80 space-y-2.5">
+          <div className="p-3 border-b border-base-content/15 bg-base-300/80 space-y-2.5">
             <div className="flex items-center gap-2">
               <div className="relative flex-1">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-base-content/50" />
+                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/50" />
                 <input
                   type="text"
                   autoFocus
                   placeholder="Tìm dự án..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="input input-xs w-full pl-8 pr-7 bg-base-100 border-blue_slate-500/30 focus:border-primary rounded-lg text-xs"
+                  className="input border-base-content/25 input-sm w-full pl-8 pr-7 bg-base-100 focus:border-primary rounded-full text-xs"
                 />
                 {searchQuery && (
                   <button
                     type="button"
                     onClick={() => setSearchQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-base-content/50 hover:text-base-content"
+                    className="btn btn-ghost btn-xs btn-circle absolute right-1.5 top-1/2 -translate-y-1/2 text-base-content/50 hover:text-base-content cursor-pointer"
+                    aria-label="Xóa tìm kiếm dự án"
                     title="Xóa tìm kiếm"
                   >
                     <X className="w-3 h-3" />
@@ -295,9 +334,9 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
                     ? 'Cũ nhất'
                     : 'Theo tên A-Z'
                 }`}
-                className="btn btn-xs btn-ghost border border-blue_slate-500/30 bg-base-100 rounded-lg gap-1 text-[11px] font-medium shrink-0"
+                className="btn btn-sm btn-outline border-base-content/25 bg-base-100 rounded-full gap-1 text-xs font-medium shrink-0"
               >
-                <ArrowUpDown className="w-3 h-3 text-glaucous-600 dark:text-pale_sky-400" />
+                <ArrowUpDown className="w-3.5 h-3.5 text-primary" />
                 <span>
                   {sortOrder === 'newest'
                     ? 'Mới nhất'
@@ -308,8 +347,8 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
               </button>
             </div>
 
-            {/* Bulk Selection Toolbar (Always present like History Drawer) */}
-            <div className="flex items-center justify-between pt-1 border-t border-blue_slate-500/20 text-xs">
+            {/* Bulk Selection Toolbar */}
+            <div className="flex items-center justify-between pt-1.5 border-t border-base-content/15 text-xs">
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input
                   type="checkbox"
@@ -333,30 +372,65 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
                   <button
                     type="button"
                     onClick={handleClearSelection}
-                    className="text-[11px] text-base-content/60 hover:text-base-content px-1.5 py-0.5 rounded cursor-pointer"
+                    className="btn btn-ghost btn-sm rounded-full text-xs text-base-content/70 hover:text-base-content cursor-pointer"
                   >
                     Bỏ chọn
                   </button>
                 )}
                 <button
                   type="button"
-                  disabled={selectedIds.length === 0}
+                  disabled={selectedIds.length === 0 || !!bulkDeleteProgress}
                   onClick={() => setIsBulkDeleteModalOpen(true)}
-                  className="btn btn-xs btn-error gap-1 text-[11px] font-bold rounded-lg shadow-xs disabled:opacity-40 cursor-pointer"
+                  className="btn btn-sm btn-error gap-1 text-xs font-bold rounded-full shadow-xs disabled:opacity-40 cursor-pointer"
                   title="Xóa các dự án đã chọn"
                 >
-                  <Trash2 className="w-3 h-3" />
-                  <span>Xóa đã chọn{selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}</span>
+                  {bulkDeleteProgress ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {bulkDeleteProgress
+                      ? `Đang xóa (${bulkDeleteProgress.done}/${bulkDeleteProgress.total})`
+                      : `Xóa đã chọn${selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}`}
+                  </span>
                 </button>
               </div>
             </div>
+
+            {/* Bulk Deletion Progress Banner */}
+            {bulkDeleteProgress && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="p-2.5 rounded-xl bg-error/10 border border-error/30 space-y-1.5"
+              >
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Loader2 className="w-3.5 h-3.5 text-error animate-spin shrink-0" />
+                    <span className="font-semibold text-error truncate">
+                      Đang xóa {bulkDeleteProgress.done + 1 <= bulkDeleteProgress.total ? bulkDeleteProgress.done + 1 : bulkDeleteProgress.total}/{bulkDeleteProgress.total}
+                      {bulkDeleteProgress.currentName ? `: ${bulkDeleteProgress.currentName}` : '...'}
+                    </span>
+                  </div>
+                  <span className="font-mono tabular-nums text-[11px] font-bold text-error shrink-0">
+                    {Math.round((bulkDeleteProgress.done / Math.max(1, bulkDeleteProgress.total)) * 100)}%
+                  </span>
+                </div>
+                <progress
+                  className="progress progress-error w-full h-1.5"
+                  value={bulkDeleteProgress.done}
+                  max={Math.max(1, bulkDeleteProgress.total)}
+                />
+              </div>
+            )}
           </div>
 
-          {/* Projects List Container (Virtual scroll / infinite windowing) */}
+          {/* Projects List Container */}
           <div
             ref={listRef}
             onScroll={handleScroll}
-            className="max-h-80 overflow-y-auto p-1.5 space-y-1 divide-y divide-blue_slate-500/10"
+            className="max-h-80 overflow-y-auto p-1.5 space-y-1 divide-y divide-base-content/10"
           >
             {/* Unselect Option */}
             {!searchQuery && (
@@ -400,7 +474,7 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
                       isSelected
                         ? 'bg-primary/15 border border-primary/40'
                         : isActive
-                        ? 'bg-glaucous-500/15 border border-glaucous-500/40 text-base-content font-medium shadow-xs'
+                        ? 'bg-primary/15 border border-primary/40 text-base-content font-medium shadow-xs'
                         : 'hover:bg-base-300/80 text-base-content/85'
                     }`}
                   >
@@ -431,9 +505,9 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
                       />
 
                       {p.mode === 'stt' ? (
-                        <Mic className="w-3.5 h-3.5 text-glaucous-600 dark:text-pale_sky-400 shrink-0" />
+                        <Mic className="w-3.5 h-3.5 text-primary shrink-0" />
                       ) : (
-                        <FileText className="w-3.5 h-3.5 text-success shrink-0" />
+                        <FileText className="w-3.5 h-3.5 text-secondary shrink-0" />
                       )}
 
                       <div className="min-w-0 flex-1">
@@ -474,14 +548,15 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
                     {/* Right: Active Check & Delete Button */}
                     <div className="flex items-center gap-1 shrink-0">
                       {isActive && (
-                        <Check className="w-3.5 h-3.5 text-glaucous-600 dark:text-pale_sky-400 mr-1" />
+                        <Check className="w-3.5 h-3.5 text-primary mr-1" />
                       )}
 
                       <button
                         type="button"
                         onClick={(e) => handleDeleteSingleClick(e, p)}
                         disabled={isProtected}
-                        className="w-7 h-7 flex items-center justify-center text-error hover:bg-error/20 bg-error/10 border border-error/25 rounded-lg transition-all cursor-pointer disabled:opacity-20 disabled:cursor-not-allowed shadow-2xs"
+                        aria-label={`Xóa dự án ${p.name}`}
+                        className="btn btn-sm btn-circle btn-outline btn-error transition-all cursor-pointer disabled:opacity-20 disabled:cursor-not-allowed"
                         title={
                           isRunning
                             ? 'Dự án đang trong quá trình xử lý, không thể xóa'
@@ -507,7 +582,7 @@ export const ProjectDropdown: React.FC<ProjectDropdownProps> = ({
           </div>
 
           {/* Footer Stats Bar */}
-          <div className="px-3 py-2 bg-base-300/60 border-t border-blue_slate-500/20 text-[11px] text-base-content/60 flex justify-between items-center">
+          <div className="px-3 py-2 bg-base-300/60 border-t border-base-content/15 text-[11px] text-base-content/60 flex justify-between items-center">
             <span>
               Tổng cộng: <strong>{projects.length}</strong> dự án
             </span>

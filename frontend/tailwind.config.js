@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: ['selector', '[data-theme="studio-dark"]'],
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",
@@ -7,57 +8,88 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['"Plus Jakarta Sans"', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+        sans: [
+          '"Plus Jakarta Sans"',
+          'system-ui',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"Segoe UI"',
+          'Roboto',
+          '"Noto Sans SC"',
+          '"PingFang SC"',
+          '"Microsoft YaHei"',
+          'sans-serif',
+        ],
+        mono: [
+          '"JetBrains Mono"',
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Monaco',
+          'Consolas',
+          'monospace',
+        ],
       },
       colors: {
-        blue_slate: {
-          DEFAULT: '#495867',
-          100: '#0f1215',
-          200: '#1e242a',
-          300: '#2c363f',
-          400: '#3b4754',
-          500: '#495867',
-          600: '#667a8f',
-          700: '#8b9cac',
-          800: '#b1bdc8',
-          900: '#d8dee3',
+        parchment: {
+          DEFAULT: '#edede9',
+          100: '#34342a',
+          200: '#676754',
+          300: '#989881',
+          400: '#c2c2b5',
+          500: '#edede9',
+          600: '#f0f0ed',
+          700: '#f4f4f2',
+          800: '#f8f8f6',
+          900: '#fbfbfb',
         },
-        glaucous: {
-          DEFAULT: '#577399',
-          100: '#11171e',
-          200: '#232e3d',
-          300: '#34455b',
-          400: '#465c7a',
-          500: '#577399',
-          600: '#768eb0',
-          700: '#98aac4',
-          800: '#bac7d8',
-          900: '#dde3eb',
+        dust_grey: {
+          DEFAULT: '#d6ccc2',
+          100: '#312921',
+          200: '#625241',
+          300: '#937a62',
+          400: '#b6a391',
+          500: '#d6ccc2',
+          600: '#ded6ce',
+          700: '#e7e0da',
+          800: '#efebe7',
+          900: '#f7f5f3',
         },
-        pale_sky: {
-          DEFAULT: '#bdd5ea',
-          100: '#142c40',
-          200: '#295881',
-          300: '#3d83c1',
-          400: '#7dacd6',
-          500: '#bdd5ea',
-          600: '#cadeee',
-          700: '#d7e6f3',
-          800: '#e5eef7',
-          900: '#f2f7fb',
+        linen: {
+          DEFAULT: '#f5ebe0',
+          100: '#473017',
+          200: '#8e5f2e',
+          300: '#c78f52',
+          400: '#debd99',
+          500: '#f5ebe0',
+          600: '#f7efe6',
+          700: '#f9f3ed',
+          800: '#fbf7f3',
+          900: '#fdfbf9',
         },
-        ghost_white: {
-          DEFAULT: '#f7f7ff',
-          100: '#000064',
-          200: '#0000c8',
-          300: '#2d2dff',
-          400: '#9191ff',
-          500: '#f7f7ff',
-          600: '#f7f7ff',
-          700: '#f9f9ff',
-          800: '#fbfbff',
-          900: '#fdfdff',
+        powder_petal: {
+          DEFAULT: '#e3d5ca',
+          100: '#38291e',
+          200: '#70523b',
+          300: '#a87b59',
+          400: '#c5a891',
+          500: '#e3d5ca',
+          600: '#e8ddd4',
+          700: '#eee6df',
+          800: '#f4eeea',
+          900: '#f9f7f4',
+        },
+        almond_silk: {
+          DEFAULT: '#d5bdaf',
+          100: '#33241b',
+          200: '#664735',
+          300: '#986b50',
+          400: '#ba937c',
+          500: '#d5bdaf',
+          600: '#ddcabf',
+          700: '#e6d7cf',
+          800: '#eee4df',
+          900: '#f7f2ef',
         },
       },
     },
@@ -69,93 +101,92 @@ export default {
     themes: [
       {
         'studio-dark': {
-          "primary": "#577399",         // glaucous DEFAULT
-          "primary-content": "#f7f7ff", // ghost_white DEFAULT
-          "secondary": "#7dacd6",       // pale_sky 400
-          "secondary-content": "#0f1215",
-          "accent": "#bdd5ea",          // pale_sky DEFAULT
-          "accent-content": "#0f1215",
-          "neutral": "#1e242a",         // blue_slate 200
-          "neutral-content": "#f7f7ff", // ghost_white DEFAULT
-          "base-100": "#0f1215",        // blue_slate 100 (deep dark slate background)
-          "base-200": "#1e242a",        // blue_slate 200 (panel background)
-          "base-300": "#2c363f",        // blue_slate 300 (cards, inputs)
-          "base-content": "#f7f7ff",    // ghost_white DEFAULT (high legibility text)
-          "info": "#768eb0",            // glaucous 600
-          "info-content": "#f7f7ff",
+          "primary": "#c78f52",         // linen 300 (warm caramel accent)
+          "primary-content": "#1f1b17", // deep espresso
+          "secondary": "#d5bdaf",       // almond_silk 500
+          "secondary-content": "#33241b",
+          "accent": "#debd99",          // linen 400
+          "accent-content": "#312921",
+          "neutral": "#34342a",         // parchment 100
+          "neutral-content": "#edede9", // parchment 500
+          "base-100": "#1f1b17",        // deep warm dark background
+          "base-200": "#2b251f",        // elevated panel
+          "base-300": "#38291e",        // powder_petal 100 (cards/toolbars)
+          "base-content": "#f5ebe0",    // linen 500 (high legibility text)
+          "info": "#b6a391",            // dust_grey 400
+          "info-content": "#312921",
           "success": "#52c41a",
-          "success-content": "#f7f7ff",
-          "warning": "#faad14",
-          "warning-content": "#0f1215",
-          "error": "#ff4d4f",
-          "error-content": "#f7f7ff",
+          "success-content": "#1f1b17",
+          "warning": "#c78f52",         // linen 300
+          "warning-content": "#1f1b17",
+          "error": "#ef4444",
+          "error-content": "#fbfbfb",
         },
         'cool-sky': {
-          "primary": "#577399",         // glaucous DEFAULT
-          "primary-content": "#f7f7ff",
-          "secondary": "#3d83c1",       // pale_sky 300
-          "secondary-content": "#f7f7ff",
-          "accent": "#295881",          // pale_sky 200
-          "accent-content": "#f7f7ff",
-          "neutral": "#2c363f",         // blue_slate 300
-          "neutral-content": "#f7f7ff",
-          "base-100": "#f7f7ff",        // ghost_white DEFAULT (clean crisp light)
-          "base-200": "#f2f7fb",        // pale_sky 900
-          "base-300": "#d8dee3",        // blue_slate 900
-          "base-content": "#0f1215",    // blue_slate 100
-          "info": "#577399",
-          "info-content": "#f7f7ff",
+          "primary": "#8e5f2e",         // linen 200 (rich bronze, >5.3:1 contrast)
+          "primary-content": "#fdfbf9", // linen 900
+          "secondary": "#664735",       // almond_silk 200
+          "secondary-content": "#f7f2ef",
+          "accent": "#a87b59",          // powder_petal 300
+          "accent-content": "#f9f7f4",
+          "neutral": "#34342a",         // parchment 100
+          "neutral-content": "#edede9",
+          "base-100": "#fbfbfb",        // parchment 900 (crisp light background)
+          "base-200": "#f5ebe0",        // linen 500 (warm panel)
+          "base-300": "#e3d5ca",        // powder_petal 500 (toolbars/inputs)
+          "base-content": "#312921",    // dust_grey 100 (high contrast text)
+          "info": "#625241",            // dust_grey 200
+          "info-content": "#f7f5f3",
           "success": "#389e0d",
-          "success-content": "#f7f7ff",
-          "warning": "#d48806",
-          "warning-content": "#0f1215",
+          "success-content": "#fbfbfb",
+          "warning": "#a87b59",         // powder_petal 300
+          "warning-content": "#f9f7f4",
           "error": "#cf1322",
-          "error-content": "#f7f7ff",
+          "error-content": "#fbfbfb",
         },
-        // Backward compatibility theme aliases
         'warm-linen': {
-          "primary": "#577399",
-          "primary-content": "#f7f7ff",
-          "secondary": "#3d83c1",
-          "secondary-content": "#f7f7ff",
-          "accent": "#295881",
-          "accent-content": "#f7f7ff",
-          "neutral": "#2c363f",
-          "neutral-content": "#f7f7ff",
-          "base-100": "#f7f7ff",
-          "base-200": "#f2f7fb",
-          "base-300": "#d8dee3",
-          "base-content": "#0f1215",
-          "info": "#577399",
-          "info-content": "#f7f7ff",
+          "primary": "#8e5f2e",
+          "primary-content": "#fdfbf9",
+          "secondary": "#664735",
+          "secondary-content": "#f7f2ef",
+          "accent": "#a87b59",
+          "accent-content": "#f9f7f4",
+          "neutral": "#34342a",
+          "neutral-content": "#edede9",
+          "base-100": "#fbfbfb",
+          "base-200": "#f5ebe0",
+          "base-300": "#e3d5ca",
+          "base-content": "#312921",
+          "info": "#625241",
+          "info-content": "#f7f5f3",
           "success": "#389e0d",
-          "success-content": "#f7f7ff",
-          "warning": "#d48806",
-          "warning-content": "#0f1215",
+          "success-content": "#fbfbfb",
+          "warning": "#a87b59",
+          "warning-content": "#f9f7f4",
           "error": "#cf1322",
-          "error-content": "#f7f7ff",
+          "error-content": "#fbfbfb",
         },
         'warm-parchment': {
-          "primary": "#577399",
-          "primary-content": "#f7f7ff",
-          "secondary": "#3d83c1",
-          "secondary-content": "#f7f7ff",
-          "accent": "#295881",
-          "accent-content": "#f7f7ff",
-          "neutral": "#2c363f",
-          "neutral-content": "#f7f7ff",
-          "base-100": "#f7f7ff",
-          "base-200": "#f2f7fb",
-          "base-300": "#d8dee3",
-          "base-content": "#0f1215",
-          "info": "#577399",
-          "info-content": "#f7f7ff",
+          "primary": "#8e5f2e",
+          "primary-content": "#fdfbf9",
+          "secondary": "#664735",
+          "secondary-content": "#f7f2ef",
+          "accent": "#a87b59",
+          "accent-content": "#f9f7f4",
+          "neutral": "#34342a",
+          "neutral-content": "#edede9",
+          "base-100": "#fbfbfb",
+          "base-200": "#f5ebe0",
+          "base-300": "#e3d5ca",
+          "base-content": "#312921",
+          "info": "#625241",
+          "info-content": "#f7f5f3",
           "success": "#389e0d",
-          "success-content": "#f7f7ff",
-          "warning": "#d48806",
-          "warning-content": "#0f1215",
+          "success-content": "#fbfbfb",
+          "warning": "#a87b59",
+          "warning-content": "#f9f7f4",
           "error": "#cf1322",
-          "error-content": "#f7f7ff",
+          "error-content": "#fbfbfb",
         },
       },
     ],

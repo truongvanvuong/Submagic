@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     app_name: str = "Sub Magic API"
     app_version: str = "0.1.0"
     host: str = "127.0.0.1"
-    port: int = 8000
+    port: int = 8001
     db_path: Path = DB_PATH
     data_dir: Path = DATA_DIR
     projects_dir: Path = PROJECTS_DIR

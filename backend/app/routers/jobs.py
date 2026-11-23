@@ -6,16 +6,21 @@ import logging
 import uuid
 from collections import defaultdict
 
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
+from app.config import settings
 from app.database import db
 from app.schemas import (
+    GeminiOCREstimateRequest,
+    GeminiOCREstimateResponse,
+    GeminiOCRExecuteRequest,
     JobStatus,
     LLMEstimateRequest,
     LLMEstimateResponse,
     LLMJobRequest,
     OCRJobRequest,
     STTJobRequest,
+    SubtitleSegmentUpdate,
     WebSocketEvent,
 )
 from app.services.llm_service import estimate_llm_cost, run_llm_postprocess_pipeline
@@ -264,3 +269,116 @@ async def cancel_project_job(project_id: str) -> dict:
         )
     )
     return {"project_id": project_id, "cancelled": True, "was_running": cancelled}
+
+
+@router.delete("/translation-cache")
+@router.post("/translation-cache/clear")
+async def clear_translation_cache_endpoint(
+    target_lang: str | None = Query(None),
+    context_type: str | None = Query(None),
+    model_name: str | None = Query(None),
+) -> dict:
+    """Clear persistent translation cache entries with optional filters."""
+    deleted_rows = await db.clear_translation_cache(
+        target_lang=target_lang,
+        context_type=context_type,
+        model_name=model_name,
+    )
+    return {
+        "cleared": True,
+        "deleted_rows": deleted_rows,
+        "target_lang": target_lang,
+        "context_type": context_type,
+        "model_name": model_name,
+    }
+
+
+@router.post("/estimate-gemini-ocr", response_model=GeminiOCREstimateResponse)
+async def estimate_gemini_ocr_endpoint(req: GeminiOCREstimateRequest) -> GeminiOCREstimateResponse:
+    """Estimate token usage and cost for running Gemini Vision OCR exclusively on low-confidence segments."""
+    project = await db.get_project(req.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Không tìm thấy dự án.")
+
+    total_segments = len(project.segments)
+    low_conf_segs = [s for s in project.segments if s.is_low_confidence or s.confidence < 0.60]
+    num_low_conf = len(low_conf_segs)
+    lines_to_process = min(num_low_conf, req.max_lines)
+
+    # Standard Gemini Flash Vision token calculation for cropped subtitle regions:
+    # ~280 prompt tokens per image crop + context prompt, ~30 completion tokens
+    prompt_tokens = lines_to_process * 280
+    completion_tokens = lines_to_process * 30
+    total_tokens = prompt_tokens + completion_tokens
+    cost_usd = (prompt_tokens * 0.000000075) + (completion_tokens * 0.00000030)
+
+    return GeminiOCREstimateResponse(
+        total_segments=total_segments,
+        low_confidence_segments=num_low_conf,
+        lines_to_process=lines_to_process,
+        estimated_prompt_tokens=prompt_tokens,
+        estimated_completion_tokens=completion_tokens,
+        estimated_total_tokens=total_tokens,
+        estimated_cost_usd=round(cost_usd, 6),
+    )
+
+
+@router.post("/gemini-ocr-fallback")
+async def execute_gemini_ocr_fallback(req: GeminiOCRExecuteRequest) -> dict:
+    """Execute Gemini Vision OCR fallback exclusively on segments flagged as low confidence."""
+    project = await db.get_project(req.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Không tìm thấy dự án.")
+
+    low_conf_segs = [s for s in project.segments if s.is_low_confidence or s.confidence < 0.60]
+    targets = low_conf_segs[: req.max_lines]
+
+    from app.services.ocr_engines import ocr_engine_cache
+    from app.utils.cjk_normalizer import convert_t2s
+    import cv2
+
+    processed = 0
+    updated_segments = []
+
+    for seg in targets:
+        # Load cropped image if available
+        crop_path = None
+        if seg.crop_image_url:
+            raw_url = seg.crop_image_url.replace("/media/", "")
+            crop_path = settings.crops_dir / raw_url
+
+        if crop_path and crop_path.exists():
+            img_bgr = cv2.imread(str(crop_path))
+            if img_bgr is not None:
+                try:
+                    gem_res = ocr_engine_cache.recognize_gemini(
+                        img_bgr,
+                        api_key=req.gemini_api_key,
+                        preferred_model=req.model,
+                    )
+                    if gem_res.text:
+                        new_text = gem_res.text.strip()
+                        norm_text = convert_t2s(new_text)
+                        await db.update_segment(
+                            req.project_id,
+                            seg.id,
+                            SubtitleSegmentUpdate(
+                                text=new_text,
+                                original_text=new_text,
+                                normalized_text=norm_text,
+                                confidence=max(seg.confidence, gem_res.confidence or 0.95),
+                                is_low_confidence=False,
+                            ),
+                        )
+                        seg.text = new_text
+                        seg.is_low_confidence = False
+                        processed += 1
+                        updated_segments.append(seg.id)
+                except Exception as exc:
+                    logger.warning("Gemini OCR fallback failed for segment %s: %s", seg.id, exc)
+
+    return {
+        "project_id": req.project_id,
+        "processed_segments": processed,
+        "updated_segment_ids": updated_segments,
+    }

@@ -384,3 +384,65 @@ async def test_end_to_end_stt_pipeline_streaming_and_autosave(tmp_path: Path, mo
     assert saved_proj.status.value == "completed"
     assert len(saved_proj.segments) == 2
 
+
+def test_smart_word_segmenter_clause_and_cjk_speech_rhythm():
+    """
+    Requirement 4: Verify SmartWordSegmenter splits multi-clause Chinese sentences,
+    CJK inter-clause spaces, and comma-delimited Vietnamese/English speech into
+    concise, speech-rhythm-aligned segments instead of merging into one long block.
+    """
+    segmenter = SmartWordSegmenter(
+        max_chars_per_line=42, max_lines_per_segment=2, max_pause_sec=0.45
+    )
+
+    # 1. Multi-clause Chinese sentence inside a single or compound Whisper token
+    cjk_words = [
+        WordTimestamp(
+            word="她是黄崇嘏,生于唐朝末年,父母早逝,与祖母相依为命。",
+            start=0.0,
+            end=6.0,
+            probability=0.95,
+        )
+    ]
+    cjk_segs = segmenter.segment_words(cjk_words, project_id="p-cjk")
+    assert len(cjk_segs) == 4
+    assert [s.text for s in cjk_segs] == [
+        "她是黄崇嘏,",
+        "生于唐朝末年,",
+        "父母早逝,",
+        "与祖母相依为命。",
+    ]
+
+    # 2. CJK space-separated clauses produced by Faster-Whisper without punctuation
+    cjk_space_words = [
+        WordTimestamp(word="顺利洗清嫌疑", start=10.0, end=11.4, probability=0.94),
+        WordTimestamp(word=" 当场释放", start=11.5, end=12.6, probability=0.94),
+    ]
+    cjk_space_segs = segmenter.segment_words(cjk_space_words, project_id="p-cjk-space")
+    assert len(cjk_space_segs) == 2
+    assert cjk_space_segs[0].text == "顺利洗清嫌疑"
+    assert cjk_space_segs[1].text == "当场释放"
+
+    # 3. Numbers with commas and colons (e.g. 10,000 and 10:30) must not be split mid-token
+    num_words = [
+        WordTimestamp(word="Giá", start=0.0, end=0.2, probability=0.95),
+        WordTimestamp(word=" là", start=0.2, end=0.4, probability=0.95),
+        WordTimestamp(word=" 10,000", start=0.4, end=0.8, probability=0.95),
+        WordTimestamp(word=" lúc", start=0.8, end=1.0, probability=0.95),
+        WordTimestamp(word=" 10:30.", start=1.0, end=1.5, probability=0.95),
+    ]
+    num_segs = segmenter.segment_words(num_words, project_id="p-num")
+    assert len(num_segs) == 1
+    assert num_segs[0].text == "Giá là 10,000 lúc 10:30."
+
+    # 4. Long unpunctuated fallback sentence in a single WordTimestamp must be split into natural segments
+    long_fallback = WordTimestamp(
+        word="Xin chào tất cả các bạn hôm nay chúng ta sẽ cùng nhau tìm hiểu về công nghệ trí tuệ nhân tạo và cách ứng dụng vào xử lý phụ đề video tự động",
+        start=0.0,
+        end=8.0,
+        probability=0.95,
+    )
+    fallback_segs = segmenter.segment_words([long_fallback], project_id="p-fallback")
+    assert len(fallback_segs) >= 2
+    assert all(len(s.text) <= 84 for s in fallback_segs)
+

@@ -69,8 +69,11 @@ class DatabaseManager:
                     start_time REAL NOT NULL,
                     end_time REAL NOT NULL,
                     text TEXT NOT NULL,
+                    original_text TEXT,
+                    normalized_text TEXT,
                     translated_text TEXT,
                     confidence REAL NOT NULL DEFAULT 1.0,
+                    is_low_confidence INTEGER NOT NULL DEFAULT 0,
                     source TEXT NOT NULL DEFAULT 'stt',
                     crop_image_url TEXT,
                     words_json TEXT NOT NULL DEFAULT '[]',
@@ -115,18 +118,84 @@ class DatabaseManager:
                     source_text TEXT NOT NULL,
                     target_lang TEXT NOT NULL,
                     context_type TEXT NOT NULL,
+                    model_name TEXT NOT NULL DEFAULT 'default',
+                    prompt_version TEXT NOT NULL DEFAULT 'v1.0',
                     translated_text TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY (source_text, target_lang, context_type)
+                    PRIMARY KEY (source_text, target_lang, context_type, model_name, prompt_version)
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_trans_cache_lookup
-                    ON translation_cache(target_lang, context_type);
+                    ON translation_cache(target_lang, context_type, model_name, prompt_version);
                 """
             )
+            # Safe column migration for subtitle_segments
+            for col, col_def in [
+                ("original_text", "TEXT"),
+                ("normalized_text", "TEXT"),
+                ("is_low_confidence", "INTEGER NOT NULL DEFAULT 0"),
+            ]:
+                try:
+                    await conn.execute(f"ALTER TABLE subtitle_segments ADD COLUMN {col} {col_def}")
+                except Exception:
+                    pass
+
+            # Safe column & 5-tuple PRIMARY KEY migration for translation_cache
+            for col, col_def in [
+                ("model_name", "TEXT NOT NULL DEFAULT 'default'"),
+                ("prompt_version", "TEXT NOT NULL DEFAULT 'v1.0'"),
+            ]:
+                try:
+                    await conn.execute(f"ALTER TABLE translation_cache ADD COLUMN {col} {col_def}")
+                except Exception:
+                    pass
+            await self._migrate_translation_cache_5tuple_pk(conn)
             await conn.commit()
         finally:
             await conn.close()
+
+    async def _migrate_translation_cache_5tuple_pk(self, conn: aiosqlite.Connection) -> None:
+        """Rebuild legacy 3-column PK translation_cache into 5-tuple PRIMARY KEY table preserving data."""
+        cur = await conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='translation_cache'"
+        )
+        row = await cur.fetchone()
+        if not row or not row[0]:
+            return
+        ddl = " ".join(str(row[0]).lower().split())
+        if "primary key (source_text, target_lang, context_type, model_name, prompt_version)" in ddl:
+            return
+
+        await conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS translation_cache_new (
+                source_text TEXT NOT NULL,
+                target_lang TEXT NOT NULL,
+                context_type TEXT NOT NULL,
+                model_name TEXT NOT NULL DEFAULT 'default',
+                prompt_version TEXT NOT NULL DEFAULT 'v1.0',
+                translated_text TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (source_text, target_lang, context_type, model_name, prompt_version)
+            );
+            INSERT OR REPLACE INTO translation_cache_new (
+                source_text, target_lang, context_type, model_name, prompt_version, translated_text, created_at
+            )
+            SELECT
+                source_text,
+                target_lang,
+                context_type,
+                COALESCE(model_name, 'default'),
+                COALESCE(prompt_version, 'v1.0'),
+                translated_text,
+                COALESCE(created_at, datetime('now'))
+            FROM translation_cache;
+            DROP TABLE translation_cache;
+            ALTER TABLE translation_cache_new RENAME TO translation_cache;
+            CREATE INDEX IF NOT EXISTS idx_trans_cache_lookup
+                ON translation_cache(target_lang, context_type, model_name, prompt_version);
+            """
+        )
 
     async def create_project(
         self,
@@ -215,6 +284,10 @@ class DatabaseManager:
     def _row_to_segment(self, row: aiosqlite.Row) -> SubtitleSegment:
         words_raw = json.loads(row["words_json"]) if row["words_json"] else []
         words = [WordTimestamp.model_validate(w) for w in words_raw]
+        keys = row.keys()
+        orig_text = row["original_text"] if "original_text" in keys else None
+        norm_text = row["normalized_text"] if "normalized_text" in keys else None
+        low_conf = bool(row["is_low_confidence"]) if "is_low_confidence" in keys else False
         return SubtitleSegment(
             id=row["id"],
             project_id=row["project_id"],
@@ -222,8 +295,11 @@ class DatabaseManager:
             start_time=float(row["start_time"]),
             end_time=float(row["end_time"]),
             text=row["text"],
+            original_text=orig_text or row["text"],
+            normalized_text=norm_text,
             translated_text=row["translated_text"],
             confidence=float(row["confidence"]),
+            is_low_confidence=low_conf,
             source=row["source"],
             crop_image_url=row["crop_image_url"],
             words=words,
@@ -348,9 +424,9 @@ class DatabaseManager:
                 """
                 INSERT INTO subtitle_segments (
                     id, project_id, segment_index, start_time, end_time,
-                    text, translated_text, confidence, source, crop_image_url,
-                    words_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    text, original_text, normalized_text, translated_text, confidence,
+                    is_low_confidence, source, crop_image_url, words_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     seg_id,
@@ -359,8 +435,11 @@ class DatabaseManager:
                     round(float(segment.start_time), 3),
                     round(float(segment.end_time), 3),
                     segment.text,
+                    segment.original_text or segment.text,
+                    segment.normalized_text,
                     segment.translated_text,
                     round(float(segment.confidence), 4),
+                    1 if segment.is_low_confidence else 0,
                     segment.source,
                     segment.crop_image_url,
                     words_json,
@@ -412,19 +491,43 @@ class DatabaseManager:
                 else current.crop_image_url
             )
 
+            if update.original_text is not None:
+                new_orig = update.original_text
+            elif update.text is not None:
+                new_orig = update.text
+            else:
+                new_orig = current.original_text
+
+            if update.normalized_text is not None:
+                new_norm = update.normalized_text
+            elif update.text is not None:
+                new_norm = None
+            else:
+                new_norm = current.normalized_text
+
+            new_low_conf = (
+                update.is_low_confidence
+                if update.is_low_confidence is not None
+                else current.is_low_confidence
+            )
+
             await conn.execute(
                 """
                 UPDATE subtitle_segments
-                SET start_time = ?, end_time = ?, text = ?, translated_text = ?,
-                    confidence = ?, crop_image_url = ?, updated_at = ?
+                SET start_time = ?, end_time = ?, text = ?, original_text = ?,
+                    normalized_text = ?, translated_text = ?, confidence = ?,
+                    is_low_confidence = ?, crop_image_url = ?, updated_at = ?
                 WHERE id = ? AND project_id = ?
                 """,
                 (
                     round(float(new_start), 3),
                     round(float(new_end), 3),
                     new_text,
+                    new_orig,
+                    new_norm,
                     new_trans,
                     new_conf,
+                    1 if new_low_conf else 0,
                     new_crop,
                     now,
                     segment_id,
@@ -440,8 +543,11 @@ class DatabaseManager:
             current.start_time = round(float(new_start), 3)
             current.end_time = round(float(new_end), 3)
             current.text = new_text
+            current.original_text = new_orig
+            current.normalized_text = new_norm
             current.translated_text = new_trans
             current.confidence = new_conf
+            current.is_low_confidence = bool(new_low_conf)
             current.crop_image_url = new_crop
             return current
 
@@ -553,13 +659,15 @@ class DatabaseManager:
             await conn.execute(
                 """
                 UPDATE subtitle_segments
-                SET start_time = ?, end_time = ?, text = ?, translated_text = ?,
+                SET start_time = ?, end_time = ?, text = ?, original_text = ?,
+                    normalized_text = NULL, translated_text = ?,
                     confidence = ?, words_json = ?, updated_at = ?
                 WHERE id = ? AND project_id = ?
                 """,
                 (
                     min(s1.start_time, s2.start_time),
                     max(s1.end_time, s2.end_time),
+                    merged_text,
                     merged_text,
                     merged_trans,
                     merged_conf,
@@ -683,12 +791,14 @@ class DatabaseManager:
             await conn.execute(
                 """
                 UPDATE subtitle_segments
-                SET end_time = ?, text = ?, translated_text = ?,
+                SET end_time = ?, text = ?, original_text = ?,
+                    normalized_text = NULL, translated_text = ?,
                     words_json = ?, updated_at = ?
                 WHERE id = ? AND project_id = ?
                 """,
                 (
                     split_t,
+                    t1,
                     t1,
                     orig.translated_text,
                     json.dumps([w.model_dump() for w in words1], ensure_ascii=False),
@@ -703,9 +813,9 @@ class DatabaseManager:
                 """
                 INSERT INTO subtitle_segments (
                     id, project_id, segment_index, start_time, end_time,
-                    text, translated_text, confidence, source, crop_image_url,
-                    words_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    text, original_text, normalized_text, translated_text, confidence,
+                    is_low_confidence, source, crop_image_url, words_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id,
@@ -714,8 +824,11 @@ class DatabaseManager:
                     split_t,
                     orig.end_time,
                     t2,
+                    t2,
+                    None,
                     None,
                     orig.confidence,
+                    0,
                     orig.source,
                     orig.crop_image_url,
                     json.dumps([w.model_dump() for w in words2], ensure_ascii=False),
@@ -883,12 +996,16 @@ class DatabaseManager:
         target_lang: str,
         context_type: str,
         source_texts: list[str],
+        model_name: str | None = None,
+        prompt_version: str | None = None,
     ) -> dict[str, str]:
         """Bulk query cached translations for a list of source_texts matching target_lang and context_type."""
         clean_sources = [s.strip() for s in source_texts if s and s.strip()]
         if not clean_sources or not target_lang or not context_type:
             return {}
 
+        model = model_name or "default"
+        prompt_ver = prompt_version or "v1.0"
         # De-duplicate while preserving list
         unique_sources = list(dict.fromkeys(clean_sources))
         conn = await self.connect()
@@ -902,9 +1019,12 @@ class DatabaseManager:
                 query = f"""
                     SELECT source_text, translated_text
                     FROM translation_cache
-                    WHERE target_lang = ? AND context_type = ? AND source_text IN ({placeholders})
+                    WHERE target_lang = ? AND context_type = ?
+                      AND (model_name = ? OR model_name = 'default')
+                      AND (prompt_version = ? OR prompt_version = 'v1.0')
+                      AND source_text IN ({placeholders})
                 """
-                params = [target_lang, context_type, *chunk]
+                params = [target_lang, context_type, model, prompt_ver, *chunk]
                 cursor = await conn.execute(query, params)
                 rows = await cursor.fetchall()
                 for r in rows:
@@ -915,30 +1035,70 @@ class DatabaseManager:
 
     async def save_cached_translations(
         self,
-        entries: list[tuple[str, str, str, str]],  # (source_text, target_lang, context_type, translated_text)
+        entries: list[Any],
     ) -> None:
         """Bulk upsert translated strings into translation_cache."""
-        clean_entries = [
-            (s.strip(), lang.strip(), ctx.strip(), trans.strip())
-            for s, lang, ctx, trans in entries
-            if s and s.strip() and lang and ctx and trans and trans.strip()
-        ]
+        clean_entries = []
+        for e in entries:
+            if len(e) == 4:
+                s, lang, ctx, trans = e
+                clean_entries.append((s.strip(), lang.strip(), ctx.strip(), "default", "v1.0", trans.strip()))
+            elif len(e) >= 6:
+                s, lang, ctx, mod, pver, trans = e[:6]
+                clean_entries.append((s.strip(), lang.strip(), ctx.strip(), (mod or "default").strip(), (pver or "v1.0").strip(), trans.strip()))
+            elif len(e) == 5:
+                s, lang, ctx, mod, trans = e
+                clean_entries.append((s.strip(), lang.strip(), ctx.strip(), (mod or "default").strip(), "v1.0", trans.strip()))
+
         if not clean_entries:
             return
 
         conn = await self.connect()
+        upsert_sql = """
+            INSERT INTO translation_cache (source_text, target_lang, context_type, model_name, prompt_version, translated_text)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source_text, target_lang, context_type, model_name, prompt_version) DO UPDATE SET
+                translated_text = excluded.translated_text,
+                created_at = datetime('now')
+        """
         try:
-            await conn.executemany(
-                """
-                INSERT INTO translation_cache (source_text, target_lang, context_type, translated_text)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(source_text, target_lang, context_type) DO UPDATE SET
-                    translated_text = excluded.translated_text,
-                    created_at = datetime('now')
-                """,
-                clean_entries,
-            )
+            try:
+                await conn.executemany(upsert_sql, clean_entries)
+            except Exception as err:
+                if "on conflict" in str(err).lower():
+                    await self._migrate_translation_cache_5tuple_pk(conn)
+                    await conn.executemany(upsert_sql, clean_entries)
+                else:
+                    raise
             await conn.commit()
+        finally:
+            await conn.close()
+
+    async def clear_translation_cache(
+        self,
+        target_lang: str | None = None,
+        context_type: str | None = None,
+        model_name: str | None = None,
+    ) -> int:
+        """Purge entries from translation_cache. If no filters given, purge all."""
+        conn = await self.connect()
+        try:
+            conditions = []
+            params = []
+            if target_lang:
+                conditions.append("target_lang = ?")
+                params.append(target_lang)
+            if context_type:
+                conditions.append("context_type = ?")
+                params.append(context_type)
+            if model_name:
+                conditions.append("model_name = ?")
+                params.append(model_name)
+
+            where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+            cursor = await conn.execute(f"DELETE FROM translation_cache{where}", tuple(params))
+            await conn.commit()
+            return cursor.rowcount
         finally:
             await conn.close()
 

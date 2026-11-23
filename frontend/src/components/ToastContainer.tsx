@@ -119,8 +119,9 @@ const ToastCard: React.FC<ToastCardProps> = ({ toast, onDismiss }) => {
         <button
           type="button"
           onClick={onDismiss}
-          className="w-6 h-6 flex items-center justify-center -mr-1 -mt-1 text-white/70 hover:text-white hover:bg-white/15 rounded-lg transition-colors cursor-pointer shrink-0"
+          aria-label="Đóng thông báo"
           title="Đóng thông báo"
+          className="w-6 h-6 flex items-center justify-center -mr-1 -mt-1 text-white/70 hover:text-white hover:bg-white/15 rounded-lg transition-colors cursor-pointer shrink-0"
         >
           <X className="w-4 h-4" />
         </button>
