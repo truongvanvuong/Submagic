@@ -84,6 +84,14 @@ def _is_valid_translation(
     if not is_cjk_target and CJK_IDEOGRAPH_RE.search(s_str):
         if CJK_IDEOGRAPH_RE.search(t_str):
             return False
+    # Reject verbatim echo of multi-word non-CJK sentences (e.g. English -> Vietnamese left untranslated)
+    if (
+        len(s_str) >= 8
+        and " " in s_str
+        and any(c.isalpha() for c in s_str)
+        and t_str.lower() == s_str.lower()
+    ):
+        return False
     return True
 
 
@@ -147,12 +155,12 @@ def _call_gemini_batch_postprocess(
     effective_target_lang = translate_to or ("vi" if fix_ocr_spelling else None)
     target_lang_label = _resolve_target_lang_name(effective_target_lang)
 
-    # Prepare batch payload with display duration constraint
+    # Prepare batch payload with short integer IDs ("0", "1", ...) instead of 36-char UUIDs
+    # so the LLM never makes hex-character copy typos and uses far fewer output tokens.
     payload_items = []
     for idx, seg in enumerate(batch):
         item_dict: dict[str, object] = {
-            "id": seg.id or f"idx_{idx}",
-            "i": idx,
+            "id": str(idx),
             "t": seg.text,
             "duration": max(0.5, round(seg.end_time - seg.start_time, 2)),
         }
@@ -235,12 +243,53 @@ def _call_gemini_batch_postprocess(
         try:
             parsed = json.loads(raw_text)
         except json.JSONDecodeError:
-            parsed = []
+            # Salvage complete JSON objects from a truncated array response
+            decoder = json.JSONDecoder()
+            salvaged: list[dict] = []
+            idx_scan = 0
+            while idx_scan < len(raw_text):
+                brace_pos = raw_text.find("{", idx_scan)
+                if brace_pos == -1:
+                    break
+                try:
+                    obj, end_pos = decoder.raw_decode(raw_text, brace_pos)
+                    if isinstance(obj, dict):
+                        salvaged.append(obj)
+                    idx_scan = end_pos
+                except json.JSONDecodeError:
+                    idx_scan = brace_pos + 1
+            parsed = salvaged
 
         if isinstance(parsed, dict):
-            parsed = parsed.get("items") or parsed.get("subtitles") or [parsed]
+            parsed = (
+                parsed.get("items")
+                or parsed.get("subtitles")
+                or parsed.get("translations")
+                or parsed.get("results")
+                or parsed.get("data")
+                or [parsed]
+            )
         if not isinstance(parsed, list):
             parsed = []
+
+        # Remap short integer IDs ("0", "1", ...) back to the real segment UUIDs
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            raw_id = str(item.get("id") if item.get("id") is not None else "").strip()
+            if raw_id.isdigit():
+                pos_idx = int(raw_id)
+                if 0 <= pos_idx < len(batch) and batch[pos_idx].id:
+                    item["id"] = str(batch[pos_idx].id)
+                    item.setdefault("i", pos_idx)
+            elif raw_id.startswith("idx_"):
+                try:
+                    pos_idx = int(raw_id.split("_", 1)[1])
+                    if 0 <= pos_idx < len(batch) and batch[pos_idx].id:
+                        item["id"] = str(batch[pos_idx].id)
+                        item.setdefault("i", pos_idx)
+                except (ValueError, TypeError):
+                    pass
 
     except Exception as exc:
         logger.warning("Lỗi gọi Gemini batch: %s", exc)
@@ -535,17 +584,43 @@ async def run_llm_postprocess_pipeline(
                     ):
                         missing_in_batch.append(seg)
 
-                # Granular retry: retry missing or untranslated lines in small sub-batches (<= 15 items)
-                if missing_in_batch:
-                    logger.warning(
-                        "Batch thiếu hoặc chưa dịch %d/%d dòng. Thử lại riêng các dòng lỗi...",
-                        len(missing_in_batch),
-                        len(batch_segs),
-                    )
-                    retry_chunk_size = 15
-                    for r_start in range(0, len(missing_in_batch), retry_chunk_size):
-                        retry_chunk = missing_in_batch[r_start : r_start + retry_chunk_size]
-                        retry_chunk_ids = {str(s.id): s for s in retry_chunk if s.id}
+                # Granular retry: Stage 2 (chunks <= 10), then Stage 3 micro-retry (chunks <= 3)
+                # so no segment is silently left untranslated due to LLM truncation or transient errors.
+                def _ingest_retry_results(retry_chunk: list[SubtitleSegment], retry_results: list) -> None:
+                    retry_chunk_ids = {str(s.id): s for s in retry_chunk if s.id}
+                    for r_idx, r_item in enumerate(retry_results):
+                        if not isinstance(r_item, dict):
+                            continue
+                        target_seg_id: str | None = None
+                        raw_rid = str(r_item.get("id")) if r_item.get("id") is not None else ""
+                        if raw_rid in retry_chunk_ids:
+                            target_seg_id = raw_rid
+                        elif raw_rid.startswith("idx_"):
+                            try:
+                                parsed_i = int(raw_rid.split("_", 1)[1])
+                                if 0 <= parsed_i < len(retry_chunk):
+                                    target_seg_id = str(retry_chunk[parsed_i].id)
+                            except (ValueError, TypeError):
+                                pass
+                        elif raw_rid.isdigit() and int(raw_rid) < len(retry_chunk):
+                            target_seg_id = str(retry_chunk[int(raw_rid)].id)
+                        elif "i" in r_item and r_item["i"] is not None:
+                            try:
+                                parsed_i = int(r_item["i"])
+                                if 0 <= parsed_i < len(retry_chunk):
+                                    target_seg_id = str(retry_chunk[parsed_i].id)
+                            except (ValueError, TypeError):
+                                pass
+                        if target_seg_id is None and r_idx < len(retry_chunk):
+                            target_seg_id = str(retry_chunk[r_idx].id)
+                        if target_seg_id:
+                            by_id[target_seg_id] = r_item
+
+                async def _run_retry_chunks(targets: list[SubtitleSegment], chunk_size: int) -> None:
+                    for r_start in range(0, len(targets), chunk_size):
+                        if cancel_ev.is_set():
+                            break
+                        retry_chunk = targets[r_start : r_start + chunk_size]
                         try:
                             try:
                                 retry_results = await asyncio.to_thread(
@@ -571,36 +646,33 @@ async def run_llm_postprocess_pipeline(
                             usage["total_tokens"] = usage.get("total_tokens", 0) + retry_usage.get("total_tokens", 0)
                             usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + retry_usage.get("prompt_tokens", 0)
                             usage["candidate_tokens"] = usage.get("candidate_tokens", 0) + retry_usage.get("candidate_tokens", 0)
-
-                            for r_idx, r_item in enumerate(retry_results):
-                                if not isinstance(r_item, dict):
-                                    continue
-                                target_seg_id: str | None = None
-                                raw_rid = str(r_item.get("id")) if r_item.get("id") is not None else ""
-                                if raw_rid in retry_chunk_ids:
-                                    target_seg_id = raw_rid
-                                elif raw_rid.startswith("idx_"):
-                                    try:
-                                        parsed_i = int(raw_rid.split("_", 1)[1])
-                                        if 0 <= parsed_i < len(retry_chunk):
-                                            target_seg_id = str(retry_chunk[parsed_i].id)
-                                    except (ValueError, TypeError):
-                                        pass
-                                elif raw_rid.isdigit() and int(raw_rid) < len(retry_chunk):
-                                    target_seg_id = str(retry_chunk[int(raw_rid)].id)
-                                elif "i" in r_item and r_item["i"] is not None:
-                                    try:
-                                        parsed_i = int(r_item["i"])
-                                        if 0 <= parsed_i < len(retry_chunk):
-                                            target_seg_id = str(retry_chunk[parsed_i].id)
-                                    except (ValueError, TypeError):
-                                        pass
-                                if target_seg_id is None and r_idx < len(retry_chunk):
-                                    target_seg_id = str(retry_chunk[r_idx].id)
-                                if target_seg_id:
-                                    by_id[target_seg_id] = r_item
+                            _ingest_retry_results(retry_chunk, retry_results)
                         except Exception as retry_err:
                             logger.warning("Thử lại các dòng lỗi thất bại: %s", retry_err)
+
+                if missing_in_batch:
+                    logger.warning(
+                        "Batch thiếu hoặc chưa dịch %d/%d dòng. Thử lại riêng các dòng lỗi...",
+                        len(missing_in_batch),
+                        len(batch_segs),
+                    )
+                    await _run_retry_chunks(missing_in_batch, chunk_size=10)
+
+                    # Stage 3: check if any lines are still missing/untranslated and retry in micro-batches (<= 3)
+                    still_missing: list[SubtitleSegment] = []
+                    for pos, seg in enumerate(batch_segs):
+                        matched_item = _match_batch_item(
+                            pos, seg, by_id, by_i, raw_results, batch_id_set
+                        )
+                        cand_tr = _extract_item_trans(matched_item, seg.text)
+                        if matched_item is None or (
+                            effective_translate_to
+                            and not _is_valid_translation(seg.text, cand_tr, effective_translate_to)
+                        ):
+                            still_missing.append(seg)
+                    if still_missing and not cancel_ev.is_set():
+                        await asyncio.sleep(0.3)
+                        await _run_retry_chunks(still_missing, chunk_size=3)
 
                 async with progress_lock:
                     total_tokens_used += usage.get("total_tokens", 0)
@@ -706,6 +778,25 @@ async def run_llm_postprocess_pipeline(
 
         elapsed = round(time.perf_counter() - start_wall, 2)
         await db.update_project_status(req.project_id, status=JobStatus.COMPLETED, progress=100.0)
+
+        untranslated_count = 0
+        if effective_translate_to:
+            untranslated_count = sum(
+                1
+                for s in all_updated_segments
+                if (s.text or "").strip()
+                and not _is_valid_translation(s.text, s.translated_text, effective_translate_to)
+            )
+            if untranslated_count > 0:
+                await emit(
+                    WebSocketEvent(
+                        event="warning",
+                        project_id=req.project_id,
+                        job_id=job_id,
+                        progress=100.0,
+                        message=f"CẢNH BÁO: Còn {untranslated_count}/{len(all_updated_segments)} dòng chưa dịch được sau khi đã thử lại. Bạn có thể bấm Dịch lại để dịch nốt các dòng còn thiếu.",
+                    )
+                )
 
         logger.info(
             "Hoàn tất dịch project %s: %d câu (tổng token: %d, prompt: %d, candidate: %d, cache: %d)",

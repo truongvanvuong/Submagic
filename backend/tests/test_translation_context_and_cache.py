@@ -391,3 +391,57 @@ async def test_cjk_untranslated_drift_retried_and_corrupted_cache_ignored(tmp_pa
     assert res[1].translated_text == "Lâu Sính bị ép đến đường cùng"
     assert llm_service._is_valid_translation("ありがとうございます", "ありがとうございます", "vi") is False
     assert llm_service._is_valid_translation("안녕하세요", "안녕하세요", "vi") is False
+    assert llm_service._is_valid_translation("I have something to confess", "I have something to confess", "vi") is False
+
+
+@pytest.mark.asyncio
+async def test_stage3_micro_retry_recovers_twice_dropped_and_echoed_lines(tmp_path):
+    """If Stage 1 and Stage 2 still drop or echo an English/CJK line, Stage 3 micro-retry recovers it."""
+    db.db_path = tmp_path / "test_stage3_retry.sqlite3"
+    await db.init_db()
+
+    proj = await db.create_project(name="Stage 3 Retry Test", video_path="v.mp4", language="en")
+    seg0 = SubtitleSegment(id="s0", project_id=proj.id, index=1, start_time=0.0, end_time=1.0, text="Hello world today")
+    seg1 = SubtitleSegment(id="s1", project_id=proj.id, index=2, start_time=1.0, end_time=2.0, text="I have something to confess")
+    await db.insert_segment(seg0)
+    await db.insert_segment(seg1)
+
+    call_count = 0
+
+    def mock_call_batch(batch, fix_ocr_spelling, translate_to, api_key, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Stage 1 translates s0, echoes s1 verbatim in English
+            return [
+                {"id": batch[0].id, "tr": "Xin chào thế giới hôm nay"},
+                {"id": batch[1].id, "tr": "I have something to confess"},
+            ]
+        if call_count == 2:
+            # Stage 2 returns empty (simulating transient truncation/failure)
+            return []
+        # Stage 3 micro-retry translates s1 cleanly
+        return [{"id": batch[0].id, "tr": "Mình có một điều muốn thú nhận"}]
+
+    req = LLMJobRequest(
+        project_id=proj.id,
+        gemini_api_key="test-key",
+        fix_ocr_spelling=False,
+        translate_to="vi",
+        force_retranslate=False,
+    )
+
+    events = []
+
+    async def collect_emit(ev):
+        events.append(ev)
+
+    with patch.object(llm_service, "_call_gemini_batch_postprocess", mock_call_batch):
+        res = await run_llm_postprocess_pipeline(req, job_id="job-stage3", emit=collect_emit)
+
+    assert call_count == 3
+    assert [r.translated_text for r in res] == [
+        "Xin chào thế giới hôm nay",
+        "Mình có một điều muốn thú nhận",
+    ]
+    assert not any(e.event == "warning" for e in events)

@@ -26,7 +26,10 @@ export interface HistoryDrawerProps {
   onDeleteHistory: (historyId: string) => void;
   onDeleteHistoryBulk?: (historyIds: string[]) => void | Promise<void>;
   onDeleteProject?: (projectId: string) => void | Promise<void>;
-  onDeleteProjectsBulk?: (projectIds: string[]) => void | Promise<void>;
+  onDeleteProjectsBulk?: (
+    projectIds: string[],
+    onProgress?: (info: { done: number; total: number; currentName: string }) => void
+  ) => void | Promise<void>;
   activeProjectId?: string | null;
   onError?: (message: string) => void;
 }
@@ -73,6 +76,11 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
   } | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isBulkConfirmOpen, setIsBulkConfirmOpen] = useState<boolean>(false);
+  const [deleteProgress, setDeleteProgress] = useState<{
+    done: number;
+    total: number;
+    currentName: string;
+  } | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [exportProject, setExportProject] = useState<ProjectDetail | null>(null);
@@ -159,13 +167,46 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
               </label>
               <button
                 type="button"
-                disabled={validSelected.length === 0}
+                disabled={validSelected.length === 0 || !!deleteProgress}
                 onClick={() => setIsBulkConfirmOpen(true)}
-                className="btn btn-sm btn-error gap-1 rounded-full cursor-pointer"
+                className="btn btn-sm btn-error gap-1 rounded-full cursor-pointer disabled:opacity-40"
               >
-                <Trash2 className="w-3.5 h-3.5" />
-                Xóa đã chọn
+                {deleteProgress ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                {deleteProgress
+                  ? `Đang xóa (${deleteProgress.done}/${deleteProgress.total})`
+                  : 'Xóa đã chọn'}
               </button>
+            </div>
+          )}
+
+          {/* Deletion Progress Banner */}
+          {deleteProgress && (
+            <div
+              role="status"
+              aria-live="polite"
+              className="mx-4 mt-3 p-3 rounded-xl bg-error/10 border border-error/30 space-y-1.5 shrink-0"
+            >
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Loader2 className="w-3.5 h-3.5 text-error animate-spin shrink-0" />
+                  <span className="font-semibold text-error truncate">
+                    Đang xóa {Math.min(deleteProgress.done + 1, deleteProgress.total)}/{deleteProgress.total}
+                    {deleteProgress.currentName ? `: ${deleteProgress.currentName}` : '...'}
+                  </span>
+                </div>
+                <span className="font-mono tabular-nums text-[11px] font-bold text-error shrink-0">
+                  {Math.round((deleteProgress.done / Math.max(1, deleteProgress.total)) * 100)}%
+                </span>
+              </div>
+              <progress
+                className="progress progress-error w-full h-1.5"
+                value={deleteProgress.done}
+                max={Math.max(1, deleteProgress.total)}
+              />
             </div>
           )}
 
@@ -338,12 +379,18 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
         cancelLabel="Hủy"
         onConfirm={async () => {
           if (pendingDelete) {
-            const { projectId, historyId } = pendingDelete;
+            const { projectId, historyId, projectName } = pendingDelete;
             setPendingDelete(null);
-            if (onDeleteProject) {
-              await onDeleteProject(projectId);
-            } else {
-              onDeleteHistory(historyId);
+            setDeleteProgress({ done: 0, total: 1, currentName: projectName });
+            try {
+              if (onDeleteProject) {
+                await onDeleteProject(projectId);
+              } else {
+                onDeleteHistory(historyId);
+              }
+              setDeleteProgress({ done: 1, total: 1, currentName: '' });
+            } finally {
+              setDeleteProgress(null);
             }
           }
         }}
@@ -361,19 +408,32 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
           const ids = [...validSelected];
           setIsBulkConfirmOpen(false);
           setSelectedIds([]);
+          if (ids.length === 0) return;
           if (onDeleteProjectsBulk) {
             // Map selected history ids to unique project_ids to avoid duplicate deletion calls
+            const selectedItems = historyList.filter((h) => ids.includes(h.id));
             const uniqueProjectIds = Array.from(
-              new Set(
-                historyList
-                  .filter((h) => ids.includes(h.id))
-                  .map((h) => h.project_id)
-                  .filter(Boolean)
-              )
+              new Set(selectedItems.map((h) => h.project_id).filter(Boolean))
             );
-            await onDeleteProjectsBulk(uniqueProjectIds);
+            if (uniqueProjectIds.length === 0) return;
+            const firstItem = selectedItems.find((h) => h.project_id === uniqueProjectIds[0]);
+            setDeleteProgress({
+              done: 0,
+              total: uniqueProjectIds.length,
+              currentName: firstItem ? firstItem.project_name : uniqueProjectIds[0],
+            });
+            try {
+              await onDeleteProjectsBulk(uniqueProjectIds, setDeleteProgress);
+            } finally {
+              setDeleteProgress(null);
+            }
           } else if (onDeleteHistoryBulk) {
-            await onDeleteHistoryBulk(ids);
+            setDeleteProgress({ done: 0, total: ids.length, currentName: '' });
+            try {
+              await onDeleteHistoryBulk(ids);
+            } finally {
+              setDeleteProgress(null);
+            }
           }
         }}
         onCancel={() => setIsBulkConfirmOpen(false)}
