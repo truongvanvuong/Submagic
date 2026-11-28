@@ -52,6 +52,7 @@ if not exist "frontend\node_modules" (
 )
 
 :: 5. Khởi động Backend (FastAPI + Uvicorn)
+if "%HF_HOME%"=="" if exist "%~dp0..\AI_Models\huggingface" set "HF_HOME=%~dp0..\AI_Models\huggingface"
 echo [INFO] Khởi động Backend tại http://127.0.0.1:8001 ...
 start "Sub Magic Backend" cmd /c "cd /d ""%~dp0backend"" && .venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload --reload-dir app"
 

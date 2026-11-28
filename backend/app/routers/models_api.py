@@ -68,9 +68,9 @@ async def get_hardware_info() -> HardwareInfo:
 @models_alias_router.get("/")
 async def list_available_models() -> dict:
     """List supported STT and OCR models and check local cache presence."""
-    whisper_dir = settings.models_dir / "whisper"
+    whisper_dir = settings.whisper_models_dir
     cached_folders = (
-        [p.name for p in whisper_dir.iterdir() if p.is_dir()]
+        [p.name for p in whisper_dir.iterdir() if p.is_dir() and p.name.startswith("models--")]
         if whisper_dir.exists()
         else []
     )

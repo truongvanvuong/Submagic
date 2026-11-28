@@ -150,7 +150,7 @@ class WhisperModelCache:
         if self._model is not None and self._loaded_key == target_key:
             return self._model, device, compute_type
 
-        download_root = str(settings.models_dir / "whisper")
+        download_root = str(settings.whisper_models_dir)
         Path(download_root).mkdir(parents=True, exist_ok=True)
 
         # Helper to load model offline-first from local cache to avoid HuggingFace network latency

@@ -49,6 +49,9 @@ echo "[INFO] Cleaning up any old process on port 8001..."
 kill_port 8001
 
 echo "[INFO] Starting Backend on http://0.0.0.0:8001 (Auto-Reload Polling Enabled for WSL /mnt/d) ..."
+if [ -z "${HF_HOME:-}" ] && [ -d "$DIR/../AI_Models/huggingface" ]; then
+    export HF_HOME="$DIR/../AI_Models/huggingface"
+fi
 export WATCHFILES_FORCE_POLLING=true
 export WATCHFILES_POLL_DELAY_MS=300
 export CHOKIDAR_USEPOLLING=true

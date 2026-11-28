@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -105,6 +106,20 @@ def ensure_directories() -> None:
 
 
 
+def _resolve_whisper_models_dir() -> Path:
+    """Resolve Whisper HuggingFace cache directory (supports shared AI_Models hub)."""
+    if custom := os.environ.get("WHISPER_MODELS_DIR"):
+        return Path(custom)
+    if hf_hub := os.environ.get("HF_HUB_CACHE"):
+        return Path(hf_hub)
+    if hf_home := os.environ.get("HF_HOME"):
+        return Path(hf_home) / "hub"
+    shared_hub = BASE_DIR.parent.parent / "AI_Models" / "huggingface" / "hub"
+    if shared_hub.is_dir():
+        return shared_hub
+    return MODELS_DIR / "whisper"
+
+
 class Settings(BaseSettings):
     app_name: str = "Sub Magic API"
     app_version: str = "0.1.0"
@@ -114,6 +129,7 @@ class Settings(BaseSettings):
     data_dir: Path = DATA_DIR
     projects_dir: Path = PROJECTS_DIR
     models_dir: Path = MODELS_DIR
+    whisper_models_dir: Path = Field(default_factory=_resolve_whisper_models_dir)
     crops_dir: Path = CROPS_DIR
     audio_dir: Path = AUDIO_DIR
     exports_dir: Path = EXPORTS_DIR
